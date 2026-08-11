@@ -19,7 +19,7 @@ import { showLoraChooser } from "../rgthree-comfy/utils_menu.js";
 import { rgthreeApi } from "../../rgthree/common/rgthree_api.js";
 import { moveArrayItem, removeArrayItem } from "../../rgthree/common/shared_utils.js";
 
-const STACK_CLASS = "FeiHouEasyH3LoraStack";
+const STACK_CLASS = "FeiHouEasyH3RHLoraStack";
 const STACK_TITLE = "加载LoRA（旁路，仅模型）（用于调试）";
 const STACK_WIDTH = 440;
 const BOTTOM_MARGIN = 14;
@@ -392,7 +392,7 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
 }
 
 app.registerExtension({
-    name: "FeiHouEasyH3.NativeLoraStack",
+    name: "FeiHouEasyH3RH.NativeLoraStack",
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === STACK_CLASS) FeiHouEasyH3LoraStackNode.setUp(nodeType, nodeData);
     },

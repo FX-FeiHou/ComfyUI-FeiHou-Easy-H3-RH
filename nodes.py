@@ -818,6 +818,29 @@ def _normalize_optimizer_base_url(api_url: str) -> str:
     return base.rstrip("/")
 
 
+def _resolve_node_optimizer_api_format(api_format: str, api_url: str) -> str:
+    """Resolve RH's default automatic API format from the configured address.
+
+    Most hosted LLM endpoints are OpenAI-compatible.  Official Gemini model
+    endpoints have an unmistakable URL shape.  A manual choice remains
+    available for online gateways whose URL intentionally hides the upstream
+    protocol.  RH intentionally does not support local Ollama endpoints.
+    """
+    requested = str(api_format or "auto").strip().lower()
+    if requested in {"openai", "gemini"}:
+        return requested
+    if requested not in {"", "auto"}:
+        raise ValueError("不支持当前 API 格式")
+
+    address = str(api_url or "").strip().lower()
+    parsed = urllib.parse.urlsplit(address if "://" in address else "https://" + address)
+    host = str(parsed.hostname or "")
+    path = str(parsed.path or "")
+    if host == "generativelanguage.googleapis.com" or _OPTIMIZER_GEMINI_ENDPOINT_RE.search(path):
+        return "gemini"
+    return "openai"
+
+
 def _optimizer_endpoint_kind(value: str) -> str:
     lower = str(value or "").lower()
     if lower.endswith("/chat/completions"):
@@ -1004,6 +1027,9 @@ def _optimizer_http_json(
     temperature: float = 0.7,
     max_tokens: int = 4096,
     top_p: float = 0.9,
+    _allow_media_fallback: bool = True,
+    _allow_parameter_fallback: bool = True,
+    _minimal_openai_payload: bool = False,
 ) -> str:
     url = _normalize_optimizer_url(api_url, api_format, model)
     media_parts = list(media_parts or [])
@@ -1048,11 +1074,77 @@ def _optimizer_http_json(
             content = [{"type": "text", "text": user_prompt}, *media_parts]
         else:
             content = user_prompt
-        payload = {"model": model, "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}], "stream": False, "temperature": temperature, "max_tokens": max_tokens, "top_p": top_p}
+        # xFlow/Grok and several other OpenAI-compatible aggregation gateways
+        # always return SSE, even when stream=false is requested.  Explicitly
+        # request a stream and consume it below, matching prompt-assistant.
+        payload = {
+            "model": model,
+            "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}],
+            "stream": True,
+        }
+        if not _minimal_openai_payload:
+            payload.update({"temperature": temperature, "max_tokens": max_tokens, "top_p": top_p})
     request = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"), headers=headers, method="POST")
     try:
         with urllib.request.urlopen(request, timeout=PROMPT_OPTIMIZER_TIMEOUT_SECONDS) as response:
-            data = json.loads(response.read().decode("utf-8"))
+            raw_response = response.read().decode("utf-8", errors="replace")
+            status = getattr(response, "status", 200)
+            content_type = str(response.headers.get("Content-Type") or "unknown")
+        try:
+            data = json.loads(raw_response)
+        except json.JSONDecodeError as exc:
+            # A few OpenAI-compatible aggregation services ignore
+            # ``stream: false`` and answer with Server-Sent Events.  Rebuild a
+            # normal chat-completions-shaped response from the delta chunks.
+            streamed_parts: list[str] = []
+            stream_parse_failed = False
+            saw_stream_event = False
+            for line in raw_response.splitlines():
+                if not line.startswith("data:"):
+                    continue
+                saw_stream_event = True
+                event_data = line[5:].strip()
+                if not event_data or event_data == "[DONE]":
+                    continue
+                try:
+                    event = json.loads(event_data)
+                except json.JSONDecodeError:
+                    stream_parse_failed = True
+                    break
+                choices = event.get("choices") if isinstance(event, Mapping) else []
+                for choice in choices if isinstance(choices, list) else []:
+                    if not isinstance(choice, Mapping):
+                        continue
+                    delta = choice.get("delta") if isinstance(choice.get("delta"), Mapping) else {}
+                    message = choice.get("message") if isinstance(choice.get("message"), Mapping) else {}
+                    part = delta.get("content", message.get("content", ""))
+                    if isinstance(part, str):
+                        streamed_parts.append(part)
+                    elif isinstance(part, list):
+                        streamed_parts.extend(
+                            str(item.get("text", ""))
+                            for item in part
+                            if isinstance(item, Mapping) and item.get("text") is not None
+                        )
+            if saw_stream_event and not stream_parse_failed:
+                data = {"choices": [{"message": {"content": "".join(streamed_parts)}}]}
+            else:
+                # Some OpenAI-compatible gateways accept the request but return
+                # an empty/non-JSON body when their selected model rejects
+                # multimedia parts.  RH embeds media automatically, so retry
+                # the same prompt as text-only once instead of failing the H3
+                # workflow immediately.
+                if media_parts and _allow_media_fallback:
+                    return _optimizer_http_json(
+                        api_url, api_key, model, api_format, system_prompt, user_prompt,
+                        [], temperature, max_tokens, top_p, _allow_media_fallback=False,
+                    )
+                preview = raw_response.strip().replace("\n", " ")[:500]
+                if not preview:
+                    preview = "<empty response>"
+                raise RuntimeError(
+                    f"提示词优化接口返回非 JSON 内容（HTTP {status}，{content_type}）：{preview}"
+                ) from exc
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         raise RuntimeError(f"Prompt optimization API error ({exc.code}): {detail[:1000]}") from exc
@@ -1080,6 +1172,17 @@ def _optimizer_http_json(
         text = content if isinstance(content, str) else "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
     text = str(text or "").strip()
     if not text:
+        # Mirrors prompt-assistant's final compatibility level: some xFlow/Grok
+        # routes acknowledge an extended payload but emit only a usage SSE
+        # chunk. Retry once with the minimal OpenAI-compatible request shape.
+        if api_format == "openai" and _allow_parameter_fallback:
+            return _optimizer_http_json(
+                api_url, api_key, model, api_format, system_prompt, user_prompt,
+                [], temperature, max_tokens, top_p,
+                _allow_media_fallback=False,
+                _allow_parameter_fallback=False,
+                _minimal_openai_payload=True,
+            )
         raise RuntimeError("Prompt optimization API returned an empty response")
     return text
 
@@ -1308,14 +1411,11 @@ def _run_node_prompt_optimizer(
     api_key: str,
     model: str,
     scene_guide: str,
-    read_media: bool = False,
     media_counts: Mapping[str, Any] | None = None,
     resources: list[Mapping[str, Any]] | None = None,
 ) -> tuple[str, str, str]:
     """Run prompt optimization from credentials saved in the RH workflow node."""
-    normalized_format = str(api_format or "openai").strip().lower()
-    if normalized_format not in {"openai", "gemini", "ollama"}:
-        raise ValueError("不支持当前 API 格式")
+    normalized_format = _resolve_node_optimizer_api_format(api_format, api_url)
     model = str(model or "").strip()
     if not model:
         raise ValueError("提示词优化模型名不能为空")
@@ -1337,7 +1437,9 @@ def _run_node_prompt_optimizer(
         }],
         "active_scheme": "none",
         "custom_schemes": [],
-        "read_media": bool(read_media),
+        # RH embeds media directly in this node.  When a visual-capable model
+        # and embedded media are available, use them automatically.
+        "read_media": True,
     }
     return _run_configured_prompt_optimizer(
         prompt,
@@ -1420,12 +1522,11 @@ def _register_prompt_optimizer_route() -> bool:
                 prompt,
                 str(payload.get("mode") or MODE_IMAGE),
                 float(payload.get("seconds") or 10.0),
-                str(payload.get("api_format") or "openai"),
+                str(payload.get("api_format") or "auto"),
                 str(payload.get("api_url") or ""),
                 str(payload.get("api_key") or ""),
                 str(payload.get("model") or ""),
                 str(payload.get("scene_guide") or "none"),
-                bool(payload.get("read_media")),
                 raw_counts,
                 resources,
             )
@@ -2108,12 +2209,11 @@ class FeiHouEasyH3:
                 "ref_image_size": (list(REFERENCE_SHORT_EDGES), {"default": REF_IMAGE_DEFAULT}),
                 "reference_mention_mode": ([REFERENCE_MENTION_FILENAME, REFERENCE_MENTION_INDEX], {"default": REFERENCE_MENTION_INDEX}),
                 "prompt_optimizer_enabled": ("BOOLEAN", {"default": False}),
-                "prompt_optimizer_api_format": (["openai", "gemini", "ollama"], {"default": "openai"}),
+                "prompt_optimizer_api_format": (["auto", "openai", "gemini"], {"default": "auto"}),
                 "prompt_optimizer_api_url": ("STRING", {"default": "", "multiline": False}),
                 "prompt_optimizer_api_key": ("STRING", {"default": "", "multiline": False, "password": True}),
                 "prompt_optimizer_model": ("STRING", {"default": "", "multiline": False}),
                 "prompt_optimizer_scene_guide": (prompt_schemes, {"default": default_prompt_scheme}),
-                "prompt_optimizer_read_media": ("BOOLEAN", {"default": False}),
             },
             "optional": optional,
         }
@@ -2154,7 +2254,7 @@ class FeiHouEasyH3:
         return images[0], images[1]
 
     @classmethod
-    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="openai", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", prompt_optimizer_read_media=False, prompt_optimizer_applied=False, **kwargs):
+    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", prompt_optimizer_applied=False, **kwargs):
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
         mode = str(mode)
@@ -2175,7 +2275,6 @@ class FeiHouEasyH3:
                     str(prompt_optimizer_api_key),
                     str(prompt_optimizer_model),
                     str(prompt_optimizer_scene_guide or "none"),
-                    bool(prompt_optimizer_read_media),
                     _media_counts_from_kwargs(kwargs),
                     _optimizer_resources_from_kwargs(kwargs),
                 )
@@ -2263,10 +2362,10 @@ _register_prompt_optimizer_route_when_ready()
 
 
 NODE_CLASS_MAPPINGS = {
-    "FeiHouEasyH3LoraStack": FeiHouEasyH3LoraStack,
-    "FeiHouEasyH3Loader": FeiHouEasyH3Loader,
-    "FeiHouEasyH3ModelAdapter": FeiHouEasyH3ModelAdapter,
-    "FeiHouEasyH3": FeiHouEasyH3,
-    "FeiHouEasyH3Output": FeiHouEasyH3Output,
-    "FeiHouEasyH3PromptPreview": FeiHouEasyH3PromptPreview,
+    "FeiHouEasyH3RHLoraStack": FeiHouEasyH3LoraStack,
+    "FeiHouEasyH3RHLoader": FeiHouEasyH3Loader,
+    "FeiHouEasyH3RHModelAdapter": FeiHouEasyH3ModelAdapter,
+    "FeiHouEasyH3RH": FeiHouEasyH3,
+    "FeiHouEasyH3RHOutput": FeiHouEasyH3Output,
+    "FeiHouEasyH3RHPromptPreview": FeiHouEasyH3PromptPreview,
 }

@@ -6,7 +6,7 @@
   "nodes": [
     {
       "id": 1,
-      "type": "FeiHouEasyH3Loader",
+      "type": "FeiHouEasyH3RHLoader",
       "pos": [
         31.39832910458804,
         -536.6626379482939
@@ -82,7 +82,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "FeiHouEasyH3Loader",
+        "Node name for S&R": "FeiHouEasyH3RHLoader",
         "cnr_id": "comfyui-feihou-easy-h3",
         "ver": "1658798be6a8ac004aa3a3973b29a41d3e036abc",
         "ue_properties": {
@@ -154,7 +154,7 @@
     },
     {
       "id": 19,
-      "type": "FeiHouEasyH3LoraStack",
+      "type": "FeiHouEasyH3RHLoraStack",
       "pos": [
         -486,
         -536.6626379482939
@@ -186,7 +186,7 @@
       "properties": {
         "cnr_id": "comfyui-feihou-easy-h3",
         "ver": "0.3.0",
-        "Node name for S&R": "FeiHouEasyH3LoraStack",
+        "Node name for S&R": "FeiHouEasyH3RHLoraStack",
         "ue_properties": {
           "widget_ue_connectable": {},
           "version": "7.8",
@@ -252,7 +252,7 @@
     },
     {
       "id": 13,
-      "type": "FeiHouEasyH3Output",
+      "type": "FeiHouEasyH3RHOutput",
       "pos": [
         1051.8425718925891,
         -440.6626379482939
@@ -321,7 +321,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "FeiHouEasyH3Output",
+        "Node name for S&R": "FeiHouEasyH3RHOutput",
         "cnr_id": "comfyui-feihou-easy-h3",
         "ver": "1658798be6a8ac004aa3a3973b29a41d3e036abc",
         "ue_properties": {
@@ -801,7 +801,7 @@
     },
     {
       "id": 2,
-      "type": "FeiHouEasyH3",
+      "type": "FeiHouEasyH3RH",
       "pos": [
         551.1343061270793,
         -535.753547039203
@@ -840,7 +840,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "FeiHouEasyH3",
+        "Node name for S&R": "FeiHouEasyH3RH",
         "feihou_h3_embedded_media": [],
         "cnr_id": "comfyui-feihou-easy-h3-rh",
         "ver": "1.0.0",
@@ -878,17 +878,16 @@
         "480",
         "按序号",
         false,
-        "openai",
+        "auto",
         "",
         "",
         "",
-        "none",
-        false
+        "none"
       ]
     },
     {
       "id": 27,
-      "type": "FeiHouEasyH3PromptPreview",
+      "type": "FeiHouEasyH3RHPromptPreview",
       "pos": [
         1046.4655272644886,
         -252.77228422928567
@@ -915,7 +914,7 @@
         }
       ],
       "properties": {
-        "Node name for S&R": "FeiHouEasyH3PromptPreview",
+        "Node name for S&R": "FeiHouEasyH3RHPromptPreview",
         "cnr_id": "comfyui-feihou-easy-h3-rh",
         "ver": "1.0.0",
         "feihou_h3_prompt_preview_text": "",

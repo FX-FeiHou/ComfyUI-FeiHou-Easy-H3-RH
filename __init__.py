@@ -8,21 +8,22 @@ from .nodes import (
 )
 
 NODE_CLASS_MAPPINGS = {
-    "FeiHouEasyH3LoraStack": FeiHouEasyH3LoraStack,
-    "FeiHouEasyH3Loader": FeiHouEasyH3Loader,
-    "FeiHouEasyH3ModelAdapter": FeiHouEasyH3ModelAdapter,
-    "FeiHouEasyH3": FeiHouEasyH3,
-    "FeiHouEasyH3Output": FeiHouEasyH3Output,
-    "FeiHouEasyH3PromptPreview": FeiHouEasyH3PromptPreview,
+    # RH has distinct Comfy class IDs so it can coexist with the standard edition.
+    "FeiHouEasyH3RHLoraStack": FeiHouEasyH3LoraStack,
+    "FeiHouEasyH3RHLoader": FeiHouEasyH3Loader,
+    "FeiHouEasyH3RHModelAdapter": FeiHouEasyH3ModelAdapter,
+    "FeiHouEasyH3RH": FeiHouEasyH3,
+    "FeiHouEasyH3RHOutput": FeiHouEasyH3Output,
+    "FeiHouEasyH3RHPromptPreview": FeiHouEasyH3PromptPreview,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "FeiHouEasyH3LoraStack": "加载LoRA（旁路，仅模型）（用于调试）",
-    "FeiHouEasyH3Loader": "FeiHou Easy H3 Loader",
-    "FeiHouEasyH3ModelAdapter": "FeiHou Easy H3 Model Adapter",
-    "FeiHouEasyH3": "ComfyUI-FeiHou-Easy-H3-RH · modified · H3: nkxx188/ComfyUI-MiniMaxH3-Easy · API: yawiii/ComfyUI-Prompt-Assistant",
-    "FeiHouEasyH3Output": "FeiHou Easy H3 Output",
-    "FeiHouEasyH3PromptPreview": "FeiHou Easy H3 提示词预览",
+    "FeiHouEasyH3RHLoraStack": "加载LoRA（旁路，仅模型）（用于调试）· RH",
+    "FeiHouEasyH3RHLoader": "FeiHou Easy H3 加载器 · RH",
+    "FeiHouEasyH3RHModelAdapter": "FeiHou Easy H3 模型中转 · RH",
+    "FeiHouEasyH3RH": "ComfyUI-FeiHou-Easy-H3-RH",
+    "FeiHouEasyH3RHOutput": "FeiHou Easy H3 输出 · RH",
+    "FeiHouEasyH3RHPromptPreview": "FeiHou Easy H3 提示词预览 · RH",
 }
 
 WEB_DIRECTORY = "./web"

@@ -7,6 +7,8 @@
 >
 > 节点中的 API 服务配置、模型发现与提示词优化相关实现借鉴自 [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant)，原作者为 **yawiii**。该项目采用 GNU GPL v3；因包含该来源的改编内容，本仓库整体按 [GNU GPL v3](LICENSE) 发布。
 
+> **适用范围：这是面向 RunningHub（RH）的适配版。** 日常本地 ComfyUI 使用请优先选择标准版：[ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3)。
+
 这是用于 RunningHub 的 MiniMax H3 ComfyUI 节点包。它以 `ComfyUI-FeiHou-Easy-H3` 为基础，将参考媒体加载内嵌到主节点内。
 
 主节点把参考媒体加载全部收进节点内部，不再需要外接 `Load Image`、`Load Video`、`Load Audio` 节点：
@@ -20,8 +22,8 @@
 - 参考模式继续支持在提示词里输入 `@` 选择 `<Picture i>`、`<Video i>`、`<Audio i>`；
 - 视频原有音轨仍与该视频自动配对，3 个音频槽位作为独立参考音频；
 - 默认 24 FPS、10 秒；参考图尺寸可选短边 480、544、640、736、768、832、928、1024、1088；
-- 打开高级选项后可见“提示词优化设置”；开启后直接在节点内填写 API 格式、地址、Key 与模型名；
-- 支持 OpenAI 兼容、Gemini 原生和 Ollama 原生 API；保留内置提示词方案，不提供自定义方案与全局 API 设置页；
+- 打开高级选项后可见“提示词优化设置”；开启后直接在节点内填写 API 地址、Key 与模型名，接口类型可自动识别，也可手动指定 OpenAI 兼容或 Gemini 原生；
+- 保留内置提示词方案，不提供自定义方案、全局 API 设置页或 Ollama 选项；
 - 保留 ✦ 点击反推、工作流运行时自动反推，以及 H3 Context 的最终提示词预览输出。
 
 > **安全提示**：RH 版将 API Key 存在节点工作流参数中，导出或分享工作流前请清除 Key，或使用权限受限、可随时撤销的 Key。
@@ -30,22 +32,22 @@
 
 - `加载LoRA（旁路，仅模型）（用于调试）`：完全沿用 `FeiHou LoRA Stack (Merge/Extract)` 的原生画布堆栈样式，可动态添加、启停、排序多个 LoRA；
 - `FeiHou Easy H3 Loader`：从左侧接收 LoRA 堆栈，并在内部加载 FL2VA/REF2VA 模型和应用 LoRA，同时加载文本编码器、视频 VAE 和音频 VAE；
-- `ComfyUI-FeiHou-Easy-H3`：主生成节点及内嵌媒体面板；
+- `ComfyUI-FeiHou-Easy-H3-RH`：主生成节点及内嵌媒体面板；
 - `FeiHou Easy H3 Model Adapter`：接入外部标准 ComfyUI 模型加载链；
 - `FeiHou Easy H3 Output`：拆出 Conditioning、Latent、视频 VAE、音频 VAE、FPS 和最终提示词；
 - `FeiHou Easy H3 提示词预览`：显示 H3 Context 携带的最终扩写 / 反推提示词。
 
-节点分类为 `FeiHou Easy H3`，类名使用独立的 `FeiHouEasyH3*` 前缀，可与原版 `ComfyUI-MiniMaxH3-Easy` 同时安装，不会发生节点 ID 或提示词优化路由冲突。
+节点分类为 `FeiHou Easy H3`，类名使用独立的 `FeiHouEasyH3RH*` 前缀，可与原版 `ComfyUI-MiniMaxH3-Easy` 同时安装，不会发生节点 ID 或提示词优化路由冲突。
 
 ## 使用
 
-1. 把当前 `Easy H3` 整个文件夹放到 `ComfyUI/custom_nodes/`；也可以将目录改名为 `ComfyUI-FeiHou-Easy-H3`。
+1. 将 `ComfyUI-FeiHou-Easy-H3-RH` 整个文件夹放到 `ComfyUI/custom_nodes/`，保持该目录名。
 2. 更新到包含官方 MiniMax H3 节点的新版 ComfyUI。
 3. 重启 ComfyUI，并在 `FeiHou Easy H3` 分类中添加节点。
 4. 把“加载LoRA（旁路，仅模型）（用于调试）”放在 Loader 左侧，将它的 `lora_stack` 输出接到 Loader 左侧的“LoRA 堆栈”输入；Loader 再连接主节点。LoRA 不再串联到主节点的 `model` 输出链路上。
 5. 选择“参考生成视频”模式后，九宫格、3 个视频槽和 3 个音频槽都会启用。
 
-提示词配置位于 ComfyUI“设置”左侧的 `🐵Easy H3` 独立插件分组。API 设置和“提示词优化规则”直接显示在右侧设置页，不再打开二级窗口；Base URL 可修改，API Key 粘贴后自动保存，预置服务不附带 Key 或模型。主节点关闭“高级选项”时不显示、也不执行 API 和提示词方案；打开后先选择已配置的 API 接口，再选择方案。API 未启用时方案不生效。API 密钥保存在 ComfyUI 用户目录下的本插件配置文件中，不随工作流导出。
+提示词优化设置不使用 ComfyUI 的全局设置页。主节点关闭“高级选项”时不显示、也不执行提示词优化；打开后再开启“提示词优化设置”，即可直接在节点内填写 API 地址、API Key、模型名并选择内置提示词方案。接口类型默认为自动识别，也可按服务要求手动选择 OpenAI 兼容或 Gemini 原生。API Key 保存在工作流节点参数中，导出工作流前请自行清除。
 
 开发时可自行维护本机的同步配置；本仓库不会提交本机路径、API Key、上传媒体或输出元数据。
 

@@ -1,11 +1,13 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
-**English** | [中文](README.md)
+[中文](README.md) | **English**
 
 > **Modified work / attribution**
 > This project is modified from [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) by **nkxx188**. That upstream project is MIT-licensed; its original copyright notice and MIT License are retained in [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt), with complete attribution in [NOTICE](NOTICE). This repository does not claim authorship of the upstream implementation.
 >
 > The node's API-service configuration, model discovery, and prompt-optimization implementation also borrow from [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant) by **yawiii**. That project is GNU GPL v3-licensed; because this repository contains adapted portions, this repository as a whole is distributed under the [GNU GPL v3](LICENSE).
+
+> **Scope:** This is the RunningHub (RH) compatibility edition. For ordinary local ComfyUI use, prefer the standard edition: [ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3).
 
 A RunningHub-oriented MiniMax H3 custom-node package based on `ComfyUI-FeiHou-Easy-H3`, with all reference-media loading embedded directly in the main node.
 
@@ -19,10 +21,10 @@ The main node provides:
 - the original `@` reference editor for `<Picture i>`, `<Video i>`, and `<Audio i>`;
 - default 24 FPS and 10-second generation;
 - reference-image short-edge presets of 480, 544, 640, 736, 768, 832, 928, 1024, and 1088;
-- direct node-level prompt-optimizer settings for OpenAI-compatible, native Gemini, and native Ollama APIs;
+- direct node-level prompt-optimizer settings with automatic API detection, plus OpenAI-compatible and native Gemini overrides;
 - bundled prompt guides only (no user-defined prompt schemes or global API settings page).
 
-In the RH build, enable Advanced options and then Prompt optimization settings to enter API format, URL, key, and model directly on the node. It supports OpenAI-compatible, native Gemini, and native Ollama APIs; only bundled prompt guides remain. The ✦ action, runtime prompt optimization, and H3 Context prompt-preview output are retained.
+In the RH build, enable Advanced options and then Prompt optimization settings to enter the API URL, key, and model directly on the node. The API type is detected automatically by default, with OpenAI-compatible and native Gemini overrides when needed. Only bundled prompt guides remain; Ollama and global API/settings pages are not included. The ✦ action, runtime prompt optimization, and H3 Context prompt-preview output are retained.
 
 > **Security notice:** API keys are saved in workflow node parameters in this RH build. Clear keys before exporting or sharing workflows, or use restricted and revocable keys.
 
@@ -30,22 +32,22 @@ Video soundtracks remain paired with their source videos. The three audio slots 
 
 ## Install
 
-Copy the current `Easy H3` folder into `ComfyUI/custom_nodes/` (optionally rename it to `ComfyUI-FeiHou-Easy-H3`), update ComfyUI to a release that includes the official MiniMax H3 nodes, and restart ComfyUI.
+Copy the `ComfyUI-FeiHou-Easy-H3-RH` folder into `ComfyUI/custom_nodes/` and keep that directory name, update ComfyUI to a release that includes the official MiniMax H3 nodes, and restart ComfyUI.
 
 Nodes appear under `FeiHou Easy H3`:
 
 - `加载LoRA（旁路，仅模型）（用于调试）` (the same native canvas stack UI as `FeiHou LoRA Stack (Merge/Extract)`)
 - `FeiHou Easy H3 Loader`
-- `ComfyUI-FeiHou-Easy-H3`
+- `ComfyUI-FeiHou-Easy-H3-RH`
 - `FeiHou Easy H3 Model Adapter`
 - `FeiHou Easy H3 Output`
 - `FeiHou Easy H3 Prompt Preview`
 
 Place the LoRA stack to the left of `FeiHou Easy H3 Loader` and connect its `lora_stack` output to the loader's left-side `LoRA stack` input. The loader applies every enabled LoRA internally; the LoRA node is not inserted into the main node's downstream `MODEL` chain.
 
-Prompt configuration is shown directly in the dedicated `🐵Easy H3` page in ComfyUI Settings, without secondary dialogs. Base URLs are editable, pasted API keys save automatically, and preset providers contain neither keys nor models. The same page contains the single prompt-optimization rule list. The main node shows the API and scheme controls only when Advanced options is enabled; the scheme is ignored until a configured API provider is selected. The final prompt is carried in H3 Context and can be connected from `FeiHou Easy H3 Output` to the bundled Prompt Preview node.
+Prompt optimization does not use a global ComfyUI Settings page in this edition. The main node shows no optimizer controls until Advanced options is enabled; then enable Prompt optimization settings to enter the API URL, key, model, and bundled prompt guide directly on the node. API type defaults to automatic detection and can be overridden to OpenAI-compatible or native Gemini. API keys are saved in workflow node parameters, so clear them before sharing a workflow. The final prompt is carried in H3 Context and can be connected from `FeiHou Easy H3 Output` to the bundled Prompt Preview node.
 
-The package uses unique `FeiHouEasyH3*` node IDs and dedicated prompt-optimizer routes, so it can be installed alongside the original project.
+The package uses unique `FeiHouEasyH3RH*` node IDs and dedicated prompt-optimizer routes, so it can be installed alongside the original project.
 
 ## Attribution, changes, and license
 

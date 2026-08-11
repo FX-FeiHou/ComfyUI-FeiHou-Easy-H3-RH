@@ -1,6 +1,6 @@
 import { app } from "../../scripts/app.js";
 
-const NODE_CLASS = "FeiHouEasyH3PromptPreview";
+const NODE_CLASS = "FeiHouEasyH3RHPromptPreview";
 const VALUE_PROP = "feihou_h3_prompt_preview_text";
 const ZH = /^zh(?:[-_]|$)/i.test(String(navigator.language || ""));
 
@@ -46,7 +46,7 @@ function updatePreview(node, message) {
 }
 
 app.registerExtension({
-    name: "FeiHouEasyH3.PromptPreview",
+    name: "FeiHouEasyH3RH.PromptPreview",
     setup() {
         installStyle();
     },
