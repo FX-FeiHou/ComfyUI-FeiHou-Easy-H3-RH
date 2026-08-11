@@ -966,7 +966,7 @@ def _optimizer_model_list_url(api_url: str, api_format: str) -> str:
 def _optimizer_available_models(provider: Mapping[str, Any]) -> list[str]:
     provider_id = str(provider.get("id") or "").strip().lower()
     if provider_id == "zhipu":
-        # 智谱没有公开、稳定的模型枚举接口；与 prompt-assistant 一致使用其维护的可选清单。
+        # 智谱没有公开、稳定的模型枚举接口；使用内置的可选模型清单。
         return list(PROMPT_OPTIMIZER_ZHIPU_MODELS)
 
     api_format = str(provider.get("api_format") or "openai").strip().lower()
@@ -1076,7 +1076,7 @@ def _optimizer_http_json(
             content = user_prompt
         # xFlow/Grok and several other OpenAI-compatible aggregation gateways
         # always return SSE, even when stream=false is requested.  Explicitly
-        # request a stream and consume it below, matching prompt-assistant.
+        # Request a stream and consume it below for providers that return SSE.
         payload = {
             "model": model,
             "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": content}],
@@ -1172,7 +1172,7 @@ def _optimizer_http_json(
         text = content if isinstance(content, str) else "".join(str(item.get("text", "")) for item in content if isinstance(item, dict))
     text = str(text or "").strip()
     if not text:
-        # Mirrors prompt-assistant's final compatibility level: some xFlow/Grok
+        # Final compatibility fallback: some xFlow/Grok
         # routes acknowledge an extended payload but emit only a usage SSE
         # chunk. Retry once with the minimal OpenAI-compatible request shape.
         if api_format == "openai" and _allow_parameter_fallback:

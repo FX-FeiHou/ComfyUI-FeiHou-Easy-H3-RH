@@ -60,8 +60,6 @@
 
 本项目是改编版本，并非独立重写。H3 节点上游来源为 [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy)，原作者为 `nkxx188`，采用 MIT License；其 MIT 文本和版权声明保留在 [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt)。上游项目要求对实质性复用或改编保留作者与项目署名；本仓库已在节点头部、README、[NOTICE](NOTICE) 和 Release 中明确保留该声明。
 
-节点的 API 服务配置、模型发现和提示词优化实现借鉴自 [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant)，原作者为 `yawiii`，采用 GNU GPL v3。由于本仓库包含该来源的改编内容，整个仓库按 [GNU GPL v3](LICENSE) 发布。
-
 FeiHou 的改动包括：固定 9 图 / 3 视频 / 3 音频的内嵌媒体面板、上传与工作流持久化、FeiHou LoRA Stack 接入、ComfyUI 设置页内的 API 与提示词规则管理、服务/模型选择、运行时提示词扩写/反推，以及提示词预览输出。参考素材的 conditioning 规则及数量限制仍遵循 ComfyUI 官方 `MiniMax H3 Reference to Video` 行为。
 
 完整许可证和保留声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。软件按“现状”提供，不附带任何担保。

@@ -2,7 +2,7 @@
 
 ## v1.0.0
 
-- Adds a visible `modified` declaration to the main node header, including H3 source (`nkxx188/ComfyUI-MiniMaxH3-Easy`) and API source (`yawiii/ComfyUI-Prompt-Assistant`).
+- Adds a visible `modified` declaration to the main node header, preserving the H3 source (`nkxx188/ComfyUI-MiniMaxH3-Easy`).
 - Embeds up to 9 images, 3 videos, and 3 standalone audio files directly in the Easy H3 node.
 - Adds the FeiHou LoRA Stack input flow for the Easy H3 Loader.
 - Adds ComfyUI Settings integration for API providers, configured service/model selection, and prompt-optimization rules.
@@ -10,4 +10,4 @@
 
 ## Attribution
 
-This release includes modified work derived from [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) (MIT) and adapted API/prompt-optimizer portions from [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant) (GNU GPL v3). The repository as a whole is released under GNU GPL v3; see [NOTICE](NOTICE), [LICENSE](LICENSE), and [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt).
+This release includes modified work derived from [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) (MIT). See [NOTICE](NOTICE), [LICENSE](LICENSE), and [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt).

@@ -324,7 +324,7 @@ function canonicalPromptProvider(value) {
     const entry = promptOptimizerServiceEntries().find((item) => raw === item.value || raw === item.label);
     if (entry) return entry.value;
     // Migrate v0.4 workflows that stored only a provider id/name by selecting
-    // that provider's configured default model, matching prompt-assistant.
+    // that provider's configured default model.
     const provider = promptOptimizerSettingsCache.providers.find((item) => raw === item.id || raw === item.name);
     const model = provider?.llm_model || provider?.vlm_model || provider?.llm_models?.[0] || provider?.vlm_models?.[0];
     return provider && model ? `${provider.id}/${model}` : raw;

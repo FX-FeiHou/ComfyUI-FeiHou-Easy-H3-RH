@@ -48,8 +48,6 @@ The package uses unique `FeiHouEasyH3RH*` node IDs and dedicated prompt-optimize
 
 This is a **modified work**, not an independent reimplementation. Its H3-node upstream source is [ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) by `nkxx188`, which is MIT-licensed. Its original copyright notice and MIT text are retained in [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt). The original project asks substantial reuses/adaptations to credit `nkxx188` and `ComfyUI-MiniMaxH3-Easy`; this repository does so in the node header, this README, [NOTICE](NOTICE), and every release.
 
-The API-service configuration, model-discovery, and prompt-optimization implementation borrows from [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant) by `yawiii`, which is GNU GPL v3-licensed. Because this repository includes adapted portions of that project, the repository as a whole is distributed under the [GNU GPL v3](LICENSE).
-
 FeiHou-specific changes include the fixed 9-image / 3-video / 3-audio embedded gallery, gallery upload/persistence, FeiHou LoRA Stack integration, settings-page API and prompt-rule management, configured service/model selection, runtime prompt optimization, and prompt-preview outputs. Reference conditioning follows ComfyUI's official `MiniMax H3 Reference to Video` behavior and limits: 9 images, 3 videos, and 3 standalone audio clips.
 
 The complete license and preservation notice are in [LICENSE](LICENSE) and [NOTICE](NOTICE). The software is provided as-is, without warranty.
