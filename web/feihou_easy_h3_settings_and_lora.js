@@ -567,16 +567,5 @@ function installStyles() {
     document.head.append(style);
 }
 
-app.registerExtension({
-    name: "FeiHouEasyH3.InlinePromptSettings",
-    settings: [{
-        id: "FeiHouEasyH3.Settings.PromptManagers",
-        name: "\u200b",
-        category: ["🐵Easy H3", t("API 与提示词设置", "API and prompt settings")],
-        tooltip: t("配置 API 接口并管理提示词优化规则", "Configure API providers and prompt optimization rules"),
-        type: settingsPanel,
-    }],
-    setup() {
-        installStyles();
-    },
-});
+// RunningHub stores prompt-optimizer credentials on each workflow node.
+// Do not register the desktop-only API / custom prompt-scheme settings page.

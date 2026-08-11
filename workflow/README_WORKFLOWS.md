@@ -4,9 +4,11 @@
 
 使用本文件夹中的工作流前，请先安装所需插件，并下载对应模型。
 
+> RunningHub 版的提示词优化 API 在 `ComfyUI-FeiHou-Easy-H3-RH` 主节点内配置：先打开“高级选项”，再打开“提示词优化设置”，即可填写 API 格式、地址、Key 和模型名。示例工作流默认不启用优化，也不含任何 API Key。
+
 ### 可能需要安装的插件
 
-- `ComfyUI-FeiHou-Easy-H3`（本目录对应的节点包）
+- `ComfyUI-FeiHou-Easy-H3-RH`（本目录对应的 RunningHub 节点包）
 - [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)
 
@@ -30,9 +32,11 @@
 
 Before using any workflow in this folder, install the required custom nodes and download the models used by that workflow.
 
+> In the RunningHub build, configure prompt optimization directly on the `ComfyUI-FeiHou-Easy-H3-RH` main node: enable Advanced options, then Prompt optimization settings, and enter the API format, URL, key, and model. The example workflow is disabled by default and contains no API key.
+
 ### Required custom nodes
 
-- `ComfyUI-FeiHou-Easy-H3` (this custom-node package)
+- `ComfyUI-FeiHou-Easy-H3-RH` (this RunningHub custom-node package)
 - [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)
 - [ComfyUI-VideoHelperSuite](https://github.com/Kosinkadink/ComfyUI-VideoHelperSuite)
 

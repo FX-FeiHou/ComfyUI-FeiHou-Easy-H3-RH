@@ -726,10 +726,15 @@ def _public_prompt_optimizer_schemes(value: Mapping[str, Any]) -> list[dict[str,
 
 
 def _prompt_optimizer_scheme_choices(settings: Mapping[str, Any] | None = None) -> tuple[list[str], str]:
-    config = settings if isinstance(settings, Mapping) else _read_prompt_optimizer_config()
-    choices = [item["id"] for item in _public_prompt_optimizer_schemes(config)] or ["none"]
-    default = str(config.get("active_scheme") or "none")
-    return choices, default if default in choices else choices[0]
+    # RunningHub keeps only the bundled Prompt Guides. User-defined schemes
+    # are intentionally not read, written, or exposed by this build.
+    manifest = _prompt_guide_manifest()
+    choices = [
+        str(item.get("id"))
+        for item in manifest.get("scene_guides", [])
+        if isinstance(item, Mapping) and item.get("id")
+    ] or ["none"]
+    return choices, "none" if "none" in choices else choices[0]
 
 
 def _prompt_optimizer_provider_choices(settings: Mapping[str, Any] | None = None) -> list[str]:
@@ -1294,6 +1299,58 @@ def _run_configured_prompt_optimizer(
     return result, str(provider.get("id") or ""), model
 
 
+def _run_node_prompt_optimizer(
+    prompt: str,
+    mode: str,
+    seconds: float,
+    api_format: str,
+    api_url: str,
+    api_key: str,
+    model: str,
+    scene_guide: str,
+    read_media: bool = False,
+    media_counts: Mapping[str, Any] | None = None,
+    resources: list[Mapping[str, Any]] | None = None,
+) -> tuple[str, str, str]:
+    """Run prompt optimization from credentials saved in the RH workflow node."""
+    normalized_format = str(api_format or "openai").strip().lower()
+    if normalized_format not in {"openai", "gemini", "ollama"}:
+        raise ValueError("不支持当前 API 格式")
+    model = str(model or "").strip()
+    if not model:
+        raise ValueError("提示词优化模型名不能为空")
+    settings = {
+        "active_provider": "node",
+        "providers": [{
+            "id": "node",
+            "name": "节点 API",
+            "api_format": normalized_format,
+            "api_url": str(api_url or "").strip(),
+            "api_key": str(api_key or ""),
+            "llm_models": [model],
+            "vlm_models": [model],
+            "llm_model": model,
+            "vlm_model": model,
+            "temperature": 0.7,
+            "max_tokens": 4096,
+            "top_p": 0.9,
+        }],
+        "active_scheme": "none",
+        "custom_schemes": [],
+        "read_media": bool(read_media),
+    }
+    return _run_configured_prompt_optimizer(
+        prompt,
+        mode,
+        seconds,
+        f"node/{model}",
+        scene_guide,
+        media_counts,
+        resources,
+        settings,
+    )
+
+
 class MiniMaxH3PromptOptimizer:
     CATEGORY = "FeiHou Easy H3"
     FUNCTION = "optimize"
@@ -1344,37 +1401,6 @@ def _register_prompt_optimizer_route() -> bool:
     if routes is None or getattr(_register_prompt_optimizer_route, "_registered", False):
         return bool(getattr(_register_prompt_optimizer_route, "_registered", False))
 
-    @routes.get("/feihou_easy_h3/prompt_optimizer_settings")
-    async def _prompt_optimizer_settings_get(request):
-        return web.json_response({"ok": True, "settings": _public_prompt_optimizer_config(_read_prompt_optimizer_config())})
-
-    @routes.post("/feihou_easy_h3/prompt_optimizer_settings")
-    async def _prompt_optimizer_settings_post(request):
-        try:
-            payload = await request.json()
-            settings = _write_prompt_optimizer_config(payload if isinstance(payload, dict) else {})
-            return web.json_response({"ok": True, "settings": _public_prompt_optimizer_config(settings)})
-        except Exception as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=500)
-
-    @routes.get("/feihou_easy_h3/providers/{provider_id}/models")
-    async def _prompt_optimizer_provider_models(request):
-        try:
-            provider_id = _safe_config_id(request.match_info.get("provider_id"), "provider")
-            settings = _read_prompt_optimizer_config()
-            provider = next(
-                (item for item in settings.get("providers", []) if isinstance(item, Mapping) and str(item.get("id")) == provider_id),
-                None,
-            )
-            if provider is None:
-                return web.json_response({"ok": False, "error": "API 接口不存在"}, status=404)
-            models = await asyncio.to_thread(_optimizer_available_models, provider)
-            return web.json_response({"ok": True, "models": models})
-        except (ValueError, RuntimeError) as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=400)
-        except Exception as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=500)
-
     @routes.get("/feihou_easy_h3/loras")
     async def _feihou_easy_h3_loras(request):
         try:
@@ -1387,20 +1413,21 @@ def _register_prompt_optimizer_route() -> bool:
         try:
             payload = await request.json()
             prompt = str(payload.get("prompt") or "")
-            settings = _read_prompt_optimizer_config()
-            requested_service = str(payload.get("service_model") or payload.get("provider_id") or "disabled")
             raw_counts = payload.get("media_counts") if isinstance(payload.get("media_counts"), dict) else {}
             resources = payload.get("resources") if isinstance(payload.get("resources"), list) else []
             result, provider_id, model = await asyncio.to_thread(
-                _run_configured_prompt_optimizer,
+                _run_node_prompt_optimizer,
                 prompt,
                 str(payload.get("mode") or MODE_IMAGE),
                 float(payload.get("seconds") or 10.0),
-                requested_service,
+                str(payload.get("api_format") or "openai"),
+                str(payload.get("api_url") or ""),
+                str(payload.get("api_key") or ""),
+                str(payload.get("model") or ""),
                 str(payload.get("scene_guide") or "none"),
+                bool(payload.get("read_media")),
                 raw_counts,
                 resources,
-                settings,
             )
             return web.json_response({
                 "ok": True,
@@ -2057,7 +2084,6 @@ class FeiHouEasyH3:
     @classmethod
     def INPUT_TYPES(cls):
         prompt_schemes, default_prompt_scheme = _prompt_optimizer_scheme_choices()
-        prompt_providers = _prompt_optimizer_provider_choices()
         optional = {}
         for index in range(1, MAX_MEDIA + 1):
             # Transport-only strings populated by the embedded-media frontend.
@@ -2081,8 +2107,13 @@ class FeiHouEasyH3:
                 "keyframe_role": ([KEYFRAME_FIRST, KEYFRAME_LAST], {"default": KEYFRAME_FIRST}),
                 "ref_image_size": (list(REFERENCE_SHORT_EDGES), {"default": REF_IMAGE_DEFAULT}),
                 "reference_mention_mode": ([REFERENCE_MENTION_FILENAME, REFERENCE_MENTION_INDEX], {"default": REFERENCE_MENTION_INDEX}),
-                "prompt_optimizer_provider": (prompt_providers, {"default": "disabled"}),
+                "prompt_optimizer_enabled": ("BOOLEAN", {"default": False}),
+                "prompt_optimizer_api_format": (["openai", "gemini", "ollama"], {"default": "openai"}),
+                "prompt_optimizer_api_url": ("STRING", {"default": "", "multiline": False}),
+                "prompt_optimizer_api_key": ("STRING", {"default": "", "multiline": False, "password": True}),
+                "prompt_optimizer_model": ("STRING", {"default": "", "multiline": False}),
                 "prompt_optimizer_scene_guide": (prompt_schemes, {"default": default_prompt_scheme}),
+                "prompt_optimizer_read_media": ("BOOLEAN", {"default": False}),
             },
             "optional": optional,
         }
@@ -2123,7 +2154,7 @@ class FeiHouEasyH3:
         return images[0], images[1]
 
     @classmethod
-    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_provider="disabled", prompt_optimizer_scene_guide="none", prompt_optimizer_applied=False, **kwargs):
+    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="openai", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", prompt_optimizer_read_media=False, prompt_optimizer_applied=False, **kwargs):
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
         mode = str(mode)
@@ -2131,16 +2162,20 @@ class FeiHouEasyH3:
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
         seconds = min(MAX_SECONDS, max(MIN_SECONDS, float(seconds)))
         length = _frame_length(seconds, fps)
-        optimizer_enabled = bool(advanced) and str(prompt_optimizer_provider or "disabled") not in {"", "disabled", "none"}
+        optimizer_enabled = bool(advanced) and bool(prompt_optimizer_enabled)
         optimizer_already_applied = prompt_optimizer_applied is True or str(prompt_optimizer_applied).strip().lower() in {"1", "true", "yes", "on"}
         if optimizer_enabled and not optimizer_already_applied:
             try:
-                prompt, _provider_id, _model = _run_configured_prompt_optimizer(
+                prompt, _provider_id, _model = _run_node_prompt_optimizer(
                     str(prompt or ""),
                     mode,
                     seconds,
-                    str(prompt_optimizer_provider),
+                    str(prompt_optimizer_api_format),
+                    str(prompt_optimizer_api_url),
+                    str(prompt_optimizer_api_key),
+                    str(prompt_optimizer_model),
                     str(prompt_optimizer_scene_guide or "none"),
+                    bool(prompt_optimizer_read_media),
                     _media_counts_from_kwargs(kwargs),
                     _optimizer_resources_from_kwargs(kwargs),
                 )

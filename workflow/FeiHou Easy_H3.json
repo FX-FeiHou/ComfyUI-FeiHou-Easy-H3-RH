@@ -842,7 +842,7 @@
       "properties": {
         "Node name for S&R": "FeiHouEasyH3",
         "feihou_h3_embedded_media": [],
-        "cnr_id": "comfyui-feihou-easy-h3",
+        "cnr_id": "comfyui-feihou-easy-h3-rh",
         "ver": "1.0.0",
         "minimax_h3_prompt_reference_doc": {
           "version": 1,
@@ -877,8 +877,13 @@
         "首帧优先",
         "480",
         "按序号",
-        "不启用",
-        "仅通用方案"
+        false,
+        "openai",
+        "",
+        "",
+        "",
+        "none",
+        false
       ]
     },
     {
@@ -911,7 +916,7 @@
       ],
       "properties": {
         "Node name for S&R": "FeiHouEasyH3PromptPreview",
-        "cnr_id": "comfyui-feihou-easy-h3",
+        "cnr_id": "comfyui-feihou-easy-h3-rh",
         "ver": "1.0.0",
         "feihou_h3_prompt_preview_text": "",
         "ue_properties": {

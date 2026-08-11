@@ -1,4 +1,4 @@
-# ComfyUI-FeiHou-Easy-H3
+# ComfyUI-FeiHou-Easy-H3-RH
 
 **English** | [中文](README.md)
 
@@ -7,7 +7,7 @@
 >
 > The node's API-service configuration, model discovery, and prompt-optimization implementation also borrow from [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant) by **yawiii**. That project is GNU GPL v3-licensed; because this repository contains adapted portions, this repository as a whole is distributed under the [GNU GPL v3](LICENSE).
 
-A MiniMax H3 custom-node package with all reference-media loading embedded directly in the main node.
+A RunningHub-oriented MiniMax H3 custom-node package based on `ComfyUI-FeiHou-Easy-H3`, with all reference-media loading embedded directly in the main node.
 
 The main node provides:
 
@@ -19,8 +19,12 @@ The main node provides:
 - the original `@` reference editor for `<Picture i>`, `<Video i>`, and `<Audio i>`;
 - default 24 FPS and 10-second generation;
 - reference-image short-edge presets of 480, 544, 640, 736, 768, 832, 928, 1024, and 1088;
-- prompt-optimizer settings for Zhipu, xFlow API aggregation, Ollama, Alibaba Cloud, DeepSeek, and custom OpenAI/Gemini/Ollama-compatible APIs;
-- built-in and user-defined prompt schemes.
+- direct node-level prompt-optimizer settings for OpenAI-compatible, native Gemini, and native Ollama APIs;
+- bundled prompt guides only (no user-defined prompt schemes or global API settings page).
+
+In the RH build, enable Advanced options and then Prompt optimization settings to enter API format, URL, key, and model directly on the node. It supports OpenAI-compatible, native Gemini, and native Ollama APIs; only bundled prompt guides remain. The ✦ action, runtime prompt optimization, and H3 Context prompt-preview output are retained.
+
+> **Security notice:** API keys are saved in workflow node parameters in this RH build. Clear keys before exporting or sharing workflows, or use restricted and revocable keys.
 
 Video soundtracks remain paired with their source videos. The three audio slots are standalone audio references. In image/first-last-frame mode, only the first two image slots are active; switching modes preserves the remaining gallery selections.
 

@@ -1,4 +1,4 @@
-# ComfyUI-FeiHou-Easy-H3
+# ComfyUI-FeiHou-Easy-H3-RH
 
 [English](README_EN.md) | **中文**
 
@@ -7,7 +7,7 @@
 >
 > 节点中的 API 服务配置、模型发现与提示词优化相关实现借鉴自 [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant)，原作者为 **yawiii**。该项目采用 GNU GPL v3；因包含该来源的改编内容，本仓库整体按 [GNU GPL v3](LICENSE) 发布。
 
-这是一个将参考媒体加载内嵌到主节点内的 MiniMax H3 ComfyUI 节点包。
+这是用于 RunningHub 的 MiniMax H3 ComfyUI 节点包。它以 `ComfyUI-FeiHou-Easy-H3` 为基础，将参考媒体加载内嵌到主节点内。
 
 主节点把参考媒体加载全部收进节点内部，不再需要外接 `Load Image`、`Load Video`、`Load Audio` 节点：
 
@@ -20,8 +20,11 @@
 - 参考模式继续支持在提示词里输入 `@` 选择 `<Picture i>`、`<Video i>`、`<Audio i>`；
 - 视频原有音轨仍与该视频自动配对，3 个音频槽位作为独立参考音频；
 - 默认 24 FPS、10 秒；参考图尺寸可选短边 480、544、640、736、768、832、928、1024、1088；
-- 提示词优化支持智谱、xFlow-API 聚合、Ollama、阿里云、DeepSeek 和自定义 OpenAI/Gemini/Ollama 兼容 API；
-- 内置提示词方案之外，还可创建、编辑和选择自定义方案。
+- 打开高级选项后可见“提示词优化设置”；开启后直接在节点内填写 API 格式、地址、Key 与模型名；
+- 支持 OpenAI 兼容、Gemini 原生和 Ollama 原生 API；保留内置提示词方案，不提供自定义方案与全局 API 设置页；
+- 保留 ✦ 点击反推、工作流运行时自动反推，以及 H3 Context 的最终提示词预览输出。
+
+> **安全提示**：RH 版将 API Key 存在节点工作流参数中，导出或分享工作流前请清除 Key，或使用权限受限、可随时撤销的 Key。
 
 ## 节点
 
