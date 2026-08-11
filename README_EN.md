@@ -2,11 +2,6 @@
 
 [中文](README.md) | **English**
 
-> **Modified work / attribution**
-> This project is modified from [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) by **nkxx188**. That upstream project is MIT-licensed; its original copyright notice and MIT License are retained in [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt), with complete attribution in [NOTICE](NOTICE). This repository does not claim authorship of the upstream implementation.
->
-> The node's API-service configuration, model discovery, and prompt-optimization implementation also borrow from [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant) by **yawiii**. That project is GNU GPL v3-licensed; because this repository contains adapted portions, this repository as a whole is distributed under the [GNU GPL v3](LICENSE).
-
 > **Scope:** This is the RunningHub (RH) compatibility edition. For ordinary local ComfyUI use, prefer the standard edition: [ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3).
 
 A RunningHub-oriented MiniMax H3 custom-node package based on `ComfyUI-FeiHou-Easy-H3`, with all reference-media loading embedded directly in the main node.

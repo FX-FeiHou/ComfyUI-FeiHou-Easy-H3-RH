@@ -2,11 +2,6 @@
 
 [English](README_EN.md) | **中文**
 
-> **改编与来源声明**
-> 本项目为 [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) 的改编版本（modified work），原作者为 **nkxx188**。该上游项目采用 MIT License；其原始版权声明及 MIT 许可证保留于 [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt)，完整来源信息见 [NOTICE](NOTICE)。
->
-> 节点中的 API 服务配置、模型发现与提示词优化相关实现借鉴自 [yawiii/ComfyUI-Prompt-Assistant](https://github.com/yawiii/ComfyUI-Prompt-Assistant)，原作者为 **yawiii**。该项目采用 GNU GPL v3；因包含该来源的改编内容，本仓库整体按 [GNU GPL v3](LICENSE) 发布。
-
 > **适用范围：这是面向 RunningHub（RH）的适配版。** 日常本地 ComfyUI 使用请优先选择标准版：[ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3)。
 
 这是用于 RunningHub 的 MiniMax H3 ComfyUI 节点包。它以 `ComfyUI-FeiHou-Easy-H3` 为基础，将参考媒体加载内嵌到主节点内。
