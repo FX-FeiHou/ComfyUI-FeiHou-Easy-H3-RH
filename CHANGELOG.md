@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.1.0
+
+- Fixes an issue where ComfyUI serializing a Boolean as the string `"false"` could still incorrectly run the in-node prompt optimization.
+- When prompt optimization is off, the node no longer makes an invalid API request or adds unnecessary waiting time.
+- Improves compatibility with saved RunningHub workflows.
+
 ## v1.0.0
 
 - Adds a visible `modified` declaration to the main node header, preserving the H3 source (`nkxx188/ComfyUI-MiniMaxH3-Easy`).

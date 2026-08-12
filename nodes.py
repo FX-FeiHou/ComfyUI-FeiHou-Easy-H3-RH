@@ -405,6 +405,13 @@ def _is_none_model(value: Any) -> bool:
     return str(value or "").strip().lower() in NONE_MODEL_ALIASES
 
 
+def _as_bool(value: Any) -> bool:
+    """Parse workflow booleans without treating the string 'false' as true."""
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _read_prompt_guide_text(relative_path: str) -> str:
     path = os.path.realpath(os.path.join(PROMPT_GUIDES_DIR, str(relative_path or "")))
     root = os.path.realpath(PROMPT_GUIDES_DIR)
@@ -2262,7 +2269,7 @@ class FeiHouEasyH3:
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
         seconds = min(MAX_SECONDS, max(MIN_SECONDS, float(seconds)))
         length = _frame_length(seconds, fps)
-        optimizer_enabled = bool(advanced) and bool(prompt_optimizer_enabled)
+        optimizer_enabled = _as_bool(advanced) and _as_bool(prompt_optimizer_enabled)
         optimizer_already_applied = prompt_optimizer_applied is True or str(prompt_optimizer_applied).strip().lower() in {"1", "true", "yes", "on"}
         if optimizer_enabled and not optimizer_already_applied:
             try:
