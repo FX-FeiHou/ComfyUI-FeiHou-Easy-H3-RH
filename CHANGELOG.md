@@ -1,5 +1,9 @@
 # Changelog
 
+## v1.3.1
+
+- Fixes a route collision when the RH and standard editions are installed together. The RH prompt-editor button now calls its own in-node API endpoint instead of the standard edition's settings-based endpoint.
+
 ## v1.3.0
 
 - Prompt optimization now sends API-only JPEG copies of reference images, capped by the node's selected `ref_image_size` and encoded at quality 85. Original H3 media is never modified.

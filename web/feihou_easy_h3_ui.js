@@ -3703,7 +3703,7 @@ async function optimizePromptFromEditor(node) {
     setPromptOptimizerStatus(node, "loading");
     syncPromptOptimizerButton(node);
     try {
-        const response = await api.fetchApi("/feihou_easy_h3/prompt_optimize", {
+        const response = await api.fetchApi("/feihou_easy_h3_rh/prompt_optimize", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({

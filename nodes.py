@@ -1682,14 +1682,17 @@ def _register_prompt_optimizer_route() -> bool:
     if routes is None or getattr(_register_prompt_optimizer_route, "_registered", False):
         return bool(getattr(_register_prompt_optimizer_route, "_registered", False))
 
-    @routes.get("/feihou_easy_h3/loras")
+    # Keep RH endpoints distinct from the standard edition. Both packages may
+    # be installed in one ComfyUI instance; sharing a route made the RH prompt
+    # button reach the standard edition's settings-only handler.
+    @routes.get("/feihou_easy_h3_rh/loras")
     async def _feihou_easy_h3_loras(request):
         try:
             return web.json_response({"ok": True, "loras": folder_paths.get_filename_list("loras")})
         except Exception as exc:
             return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
-    @routes.post("/feihou_easy_h3/prompt_optimize")
+    @routes.post("/feihou_easy_h3_rh/prompt_optimize")
     async def _prompt_optimize(request):
         try:
             payload = await request.json()
