@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-feihou-easy-h3-rh"
 description = "RunningHub MiniMax H3 generation with an embedded 9-image, 3-video, and 3-audio reference gallery."
-version = "1.3.1"
+version = "1.3.3"
 license = { file = "LICENSE" }
 dependencies = []
 

@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.3.3
+
+- Embedded images, videos, and audio can now be dragged within their own galleries to change their reference order. The new order is saved in the workflow and used by H3 and prompt optimization.
+
+## v1.3.2
+
+- Fixes FeiHou Easy H3 Loader model dropdowns retaining a stale plugin-level
+  file list. Newly saved models under `models/diffusion_models` now appear the
+  next time ComfyUI refreshes node definitions, without requiring a further
+  server restart.
+
 ## v1.3.1
 
 - Fixes a route collision when the RH and standard editions are installed together. The RH prompt-editor button now calls its own in-node API endpoint instead of the standard edition's settings-based endpoint.
