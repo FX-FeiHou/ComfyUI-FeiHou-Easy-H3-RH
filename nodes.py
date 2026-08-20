@@ -18,6 +18,7 @@ import logging
 import uuid
 import base64
 import asyncio
+import gc
 import json
 import mimetypes
 import tempfile
@@ -42,11 +43,32 @@ from comfy_extras import nodes_minimax_h3 as h3
 from comfy_extras import nodes_audio as comfy_audio_nodes
 from comfy_api.latest import InputImpl
 
+_LOGGER = logging.getLogger("FeiHouEasyH3")
+
 
 MODE_IMAGE = "image"
 MODE_REFERENCE = "reference"
+MODE_ALIASES = {
+    MODE_IMAGE: MODE_IMAGE,
+    "图生或首尾帧": MODE_IMAGE,
+    "图生或首尾帧视频": MODE_IMAGE,
+    "i2v or first/last frame": MODE_IMAGE,
+    MODE_REFERENCE: MODE_REFERENCE,
+    "参考生视频": MODE_REFERENCE,
+    "reference-to-video": MODE_REFERENCE,
+}
 KEYFRAME_FIRST = "first"
 KEYFRAME_LAST = "last"
+KEYFRAME_ALIASES = {
+    KEYFRAME_FIRST: KEYFRAME_FIRST,
+    "首帧优先": KEYFRAME_FIRST,
+    "first frame priority": KEYFRAME_FIRST,
+    KEYFRAME_LAST: KEYFRAME_LAST,
+    "尾帧优先": KEYFRAME_LAST,
+    "last frame priority": KEYFRAME_LAST,
+}
+EMBEDDED_MEDIA_JSON_KEYS = ("embedded_media_json", "feihou_h3_embedded_media", "embedded_media")
+EMBEDDED_MEDIA_PROP = "feihou_h3_embedded_media"
 REFERENCE_SHORT_EDGES = ("480", "544", "640", "736", "768", "832", "928", "1024", "1088")
 REF_IMAGE_DEFAULT = "480"
 REFERENCE_MENTION_FILENAME = "filename"
@@ -244,6 +266,20 @@ def _reference_aligned_size(image_w: int, image_h: int, scale: float) -> tuple[i
 _PROMPT_OPTIMIZER_CONFIG_LOCK = threading.RLock()
 REFERENCE_PLACEHOLDER_RE = re.compile(r"__MINIMAX_H3_REF_(\d+)__")
 UNRESOLVED_REFERENCE_RE = re.compile(r"__MINIMAX_H3_UNRESOLVED_REF_[^_]+__")
+DISPLAY_REFERENCE_RE = re.compile(
+    r"(?:@(?P<kind>图片|视频|音频|Picture|Video|Audio|image|video|audio)\s*(?P<num>\d+)"
+    r"|<(?P<kind2>图片|视频|音频|Picture|Video|Audio|image|video|audio)\s*(?P<num2>\d+)>)",
+    re.IGNORECASE,
+)
+DISPLAY_REFERENCE_KIND = {
+    "图片": "image",
+    "picture": "image",
+    "image": "image",
+    "视频": "video",
+    "video": "video",
+    "音频": "audio",
+    "audio": "audio",
+}
 MODEL_FILE_EXTENSIONS = {".safetensors", ".gguf"}
 
 
@@ -320,13 +356,13 @@ def _filesystem_weight_names(categories: tuple[str, ...]) -> list[str]:
     return names
 
 
+@lru_cache(maxsize=16)
 def _collect_weight_names(categories: tuple[str, ...]) -> list[str]:
-    """Collect the current contents of ComfyUI's model directories.
+    """Collect model filenames via folder_paths cache only.
 
-    Do not cache this result at the plugin level.  ComfyUI's own filename
-    cache already tracks directory changes, while an additional permanent
-    cache here made models written after startup invisible to Easy H3 Loader
-    until the Python process was restarted.
+    Do not os.walk / rglob models trees: on RH those paths are often NFS and
+    INPUT_TYPES / object_info would amplify readdir cost. GGUF discovery relies
+    on registered categories such as ``unet_gguf`` / ``clip_gguf`` instead.
     """
     names: list[str] = []
     seen: set[str] = set()
@@ -421,6 +457,243 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"1", "true", "yes", "on"}
     return bool(value)
+
+
+def _canonical_mode(value: Any) -> str:
+    raw = str(value or "").strip()
+    mapped = MODE_ALIASES.get(raw) or MODE_ALIASES.get(raw.lower())
+    if mapped:
+        return mapped
+    compact = raw.lower().replace(" ", "")
+    if "参考" in raw or "reference" in compact:
+        return MODE_REFERENCE
+    if "图生" in raw or "first" in compact or compact in {MODE_IMAGE, "i2v"}:
+        return MODE_IMAGE
+    return raw
+
+
+def _canonical_keyframe_role(value: Any) -> str:
+    raw = str(value or "").strip()
+    mapped = KEYFRAME_ALIASES.get(raw) or KEYFRAME_ALIASES.get(raw.lower())
+    if mapped:
+        return mapped
+    return KEYFRAME_LAST if raw == KEYFRAME_LAST else KEYFRAME_FIRST
+
+
+def _media_type_from_name(name: str) -> str:
+    ext = os.path.splitext(str(name or "").replace("\\", "/").rsplit("/", 1)[-1])[1].lower()
+    if ext in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}:
+        return "image"
+    if ext in {".mp4", ".webm", ".mov", ".mkv", ".avi"}:
+        return "video"
+    if ext in {".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac"}:
+        return "audio"
+    return ""
+
+
+def _embedded_media_path_from_record(item: Mapping[str, Any]) -> str:
+    filename = str(item.get("filename") or "").strip().replace("\\", "/")
+    subfolder = str(item.get("subfolder") or "").strip().replace("\\", "/")
+    if not filename:
+        return ""
+    if subfolder and not filename.startswith(f"{subfolder}/"):
+        return f"{subfolder}/{filename}"
+    return filename
+
+
+def _parse_embedded_media_payload(value: Any) -> list[dict[str, str]]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return []
+        try:
+            value = json.loads(text)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, list):
+        return []
+    records: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            continue
+        media_type = str(item.get("media_type") or item.get("type") or "").strip().lower()
+        filename = _embedded_media_path_from_record(item)
+        if not filename:
+            continue
+        if media_type not in {"image", "video", "audio"}:
+            media_type = _media_type_from_name(filename)
+        if media_type not in {"image", "video", "audio"}:
+            continue
+        records.append({"filename": filename, "media_type": media_type})
+    return records
+
+
+def _workflow_graph_nodes(extra_pnginfo: Any) -> list[Any]:
+    payload = extra_pnginfo
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(payload, Mapping):
+        return []
+    workflow = payload.get("workflow") or payload.get("Workflow") or payload
+    if isinstance(workflow, str):
+        try:
+            workflow = json.loads(workflow)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(workflow, Mapping):
+        return []
+    nodes = workflow.get("nodes")
+    return nodes if isinstance(nodes, list) else []
+
+
+def _records_from_named_mapping(values: Mapping[str, Any] | None) -> list[dict[str, str]]:
+    if not isinstance(values, Mapping):
+        return []
+    for key in EMBEDDED_MEDIA_JSON_KEYS:
+        records = _parse_embedded_media_payload(values.get(key))
+        if records:
+            return records
+    collected: list[dict[str, str]] = []
+    for index in range(1, MAX_MEDIA + 1):
+        raw = values.get(f"media_{index}")
+        if isinstance(raw, str) and raw.strip().startswith("["):
+            parsed = _parse_embedded_media_payload(raw)
+            if parsed:
+                return parsed
+        filename = str(raw or "").strip().replace("\\", "/")
+        media_type = str(values.get(f"media_type_{index}") or "").strip().lower()
+        if not filename:
+            continue
+        if media_type not in {"image", "video", "audio"}:
+            media_type = _media_type_from_name(filename)
+        if media_type not in {"image", "video", "audio"}:
+            continue
+        collected.append({"filename": filename, "media_type": media_type})
+    return collected
+
+
+def _scan_payload_for_embedded_media(value: Any) -> list[dict[str, str]]:
+    parsed = _parse_embedded_media_payload(value)
+    if parsed:
+        return parsed
+    if isinstance(value, Mapping):
+        records = _records_from_named_mapping(value)
+        if records:
+            return records
+        for nested in value.values():
+            if isinstance(nested, (str, list, Mapping)):
+                records = _scan_payload_for_embedded_media(nested)
+                if records:
+                    return records
+    return []
+
+
+def _iter_graph_nodes(extra_pnginfo: Any):
+    for node in _workflow_graph_nodes(extra_pnginfo):
+        if isinstance(node, Mapping):
+            yield node
+    payload = extra_pnginfo
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except json.JSONDecodeError:
+            payload = None
+    if not isinstance(payload, Mapping):
+        return
+    for key, node in payload.items():
+        if key in {"workflow", "Workflow", "prompt", "Prompt"}:
+            continue
+        if not isinstance(node, Mapping):
+            continue
+        if not (node.get("class_type") or node.get("inputs") or node.get("properties")):
+            continue
+        if node.get("id") is None:
+            node = {**node, "id": key}
+        yield node
+    prompt = payload.get("prompt") or payload.get("Prompt")
+    if isinstance(prompt, Mapping):
+        for key, node in prompt.items():
+            if not isinstance(node, Mapping):
+                continue
+            if node.get("id") is None:
+                node = {**node, "id": key}
+            yield node
+
+
+def _embedded_media_from_workflow_node(node: Mapping[str, Any]) -> list[dict[str, str]]:
+    props = node.get("properties") if isinstance(node.get("properties"), Mapping) else {}
+    records = _parse_embedded_media_payload(props.get(EMBEDDED_MEDIA_PROP))
+    if records:
+        return records
+    records = _records_from_named_mapping(node.get("widgets_values") if isinstance(node.get("widgets_values"), Mapping) else None)
+    if records:
+        return records
+    return _records_from_named_mapping(node.get("inputs") if isinstance(node.get("inputs"), Mapping) else None)
+
+
+def _embedded_media_from_extra(extra_pnginfo: Any, unique_id: Any = None) -> list[dict[str, str]]:
+    target_id = str(unique_id or "").strip()
+    fallback: list[dict[str, str]] = []
+    seen_target = False
+    target_records: list[dict[str, str]] = []
+    for node in _iter_graph_nodes(extra_pnginfo):
+        records = _embedded_media_from_workflow_node(node)
+        node_id = str(node.get("id", ""))
+        if target_id and node_id == target_id:
+            seen_target = True
+            target_records = records
+            continue
+        class_name = str(node.get("type") or node.get("class_type") or "")
+        if records and class_name in {"FeiHouEasyH3RH", "FeiHouEasyH3"}:
+            fallback = records
+    if target_id and seen_target:
+        return target_records
+    if fallback:
+        return fallback
+    return _scan_payload_for_embedded_media(extra_pnginfo)
+
+
+def _media_records_from_inputs(
+    kwargs: Mapping[str, Any],
+    extra_pnginfo: Any = None,
+    unique_id: Any = None,
+) -> list[dict[str, str]]:
+    records: list[dict[str, str]] = []
+    for index in range(1, MAX_MEDIA + 1):
+        value = kwargs.get(f"media_{index}")
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        if isinstance(value, str) and value.strip().startswith("["):
+            parsed = _parse_embedded_media_payload(value)
+            if parsed:
+                return parsed
+        if not isinstance(value, str):
+            media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
+            if media_type not in {"image", "video", "audio"}:
+                media_type = _infer_media_type(value) or "image"
+            records.append({"filename": "", "media_type": media_type, "value": value})
+            continue
+        filename = value.strip().replace("\\", "/")
+        media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
+        if media_type not in {"image", "video", "audio"}:
+            media_type = _media_type_from_name(filename)
+        if media_type not in {"image", "video", "audio"}:
+            continue
+        records.append({"filename": filename, "media_type": media_type})
+    if records:
+        return records
+    named = _records_from_named_mapping(kwargs)
+    if named:
+        return named
+    scanned = _scan_payload_for_embedded_media(kwargs)
+    if scanned:
+        return scanned
+    return _embedded_media_from_extra(extra_pnginfo, unique_id)
 
 
 def _read_prompt_guide_text(relative_path: str) -> str:
@@ -1291,22 +1564,64 @@ def _optimizer_http_json(
     return text
 
 
+def _annotated_media_name(rel_path: str, folder_type: str = "input") -> str:
+    """Build a ComfyUI annotated name (``rel`` / ``rel [output]`` / ``rel [temp]``)."""
+    rel = str(rel_path or "").replace("\\", "/").strip().strip("/")
+    kind = str(folder_type or "input").strip().lower()
+    if kind == "output":
+        return f"{rel} [output]"
+    if kind == "temp":
+        return f"{rel} [temp]"
+    # Implicit input: exists_annotated_filepath triggers RH COS sync.
+    return rel
+
+
+def _optimizer_rel_candidates(filename: str, subfolder: str = "") -> list[str]:
+    name = str(filename or "").strip().replace("\\", "/")
+    if not name or os.path.isabs(name) or ".." in name.split("/"):
+        return []
+    sub = str(subfolder or "").replace("\\", "/").strip("/")
+    if sub and ".." in sub.split("/"):
+        return []
+    out: list[str] = []
+    if sub and not name.startswith(sub + "/") and name != sub:
+        out.append(f"{sub}/{os.path.basename(name)}")
+    out.append(name)
+    base = os.path.basename(name)
+    if base and base != name:
+        out.append(base)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for item in out:
+        if item and item not in seen:
+            seen.add(item)
+            unique.append(item)
+    return unique
+
+
 def _optimizer_asset_path(asset: Mapping[str, Any]) -> str | None:
+    """Resolve optimizer media via annotated filepath APIs (RH COS sync).
+
+    Must not join get_input_directory() + isfile: that bypasses COS pull on RH.
+    """
     filename = str(asset.get("filename") or "").strip()
-    if not filename or os.path.isabs(filename):
+    if not filename:
         return None
     storage = str(asset.get("storage") or "input").lower()
-    roots = {
-        "input": folder_paths.get_input_directory(),
-        "output": folder_paths.get_output_directory(),
-        "temp": folder_paths.get_temp_directory(),
-    }
-    root = os.path.realpath(roots.get(storage, roots["input"]))
+    if storage not in {"input", "output", "temp"}:
+        storage = "input"
     subfolder = str(asset.get("subfolder") or "").replace("\\", "/").strip("/")
-    candidate = os.path.realpath(os.path.join(root, subfolder, filename))
-    if candidate != root and not candidate.startswith(root + os.sep):
-        return None
-    return candidate if os.path.isfile(candidate) else None
+    for rel in _optimizer_rel_candidates(filename, subfolder):
+        annotated = _annotated_media_name(rel, storage)
+        try:
+            if not folder_paths.exists_annotated_filepath(annotated):
+                continue
+            path = folder_paths.get_annotated_filepath(annotated)
+        except (ValueError, OSError, TypeError):
+            continue
+        if path and os.path.isfile(path):
+            return path
+    return None
 
 
 def _optimizer_reference_short_edge(value: Any) -> int:
@@ -1412,11 +1727,15 @@ def _optimizer_media_parts(
     return parts
 
 
-def _media_counts_from_kwargs(kwargs: Mapping[str, Any]) -> dict[str, int]:
+def _media_counts_from_kwargs(
+    kwargs: Mapping[str, Any],
+    extra_pnginfo: Any = None,
+    unique_id: Any = None,
+) -> dict[str, int]:
     counts = {"image": 0, "video": 0, "audio": 0}
-    for index in range(1, MAX_MEDIA + 1):
-        kind = str(kwargs.get(f"media_type_{index}") or "").lower()
-        if kind in counts and kwargs.get(f"media_{index}") is not None:
+    for record in _media_records_from_inputs(kwargs, extra_pnginfo, unique_id):
+        kind = str(record.get("media_type") or "")
+        if kind in counts:
             counts[kind] += 1
     direct = kwargs.get("media")
     if direct is not None:
@@ -1493,12 +1812,16 @@ def _optimizer_scheme(settings: Mapping[str, Any], requested: Any = None) -> tup
     return (scheme_id if scheme_id in builtin_ids else "none"), ""
 
 
-def _optimizer_resources_from_kwargs(kwargs: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _optimizer_resources_from_kwargs(
+    kwargs: Mapping[str, Any],
+    extra_pnginfo: Any = None,
+    unique_id: Any = None,
+) -> list[dict[str, Any]]:
     resources: list[dict[str, Any]] = []
     counts = {"image": 0, "video": 0, "audio": 0}
-    for index in range(1, MAX_MEDIA + 1):
-        filename = str(kwargs.get(f"media_{index}") or "").strip().replace("\\", "/")
-        media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
+    for record in _media_records_from_inputs(kwargs, extra_pnginfo, unique_id):
+        filename = str(record.get("filename") or "").strip()
+        media_type = str(record.get("media_type") or "")
         if not filename or media_type not in counts:
             continue
         counts[media_type] += 1
@@ -1691,12 +2014,14 @@ def _register_prompt_optimizer_route() -> bool:
     # Keep RH endpoints distinct from the standard edition. Both packages may
     # be installed in one ComfyUI instance; sharing a route made the RH prompt
     # button reach the standard edition's settings-only handler.
-    @routes.get("/feihou_easy_h3_rh/loras")
-    async def _feihou_easy_h3_loras(request):
-        try:
-            return web.json_response({"ok": True, "loras": folder_paths.get_filename_list("loras")})
-        except Exception as exc:
-            return web.json_response({"ok": False, "error": str(exc)}, status=500)
+    # Unused: LoRA list is picked via RH resource popup / rgthreeApi.getLoras(),
+    # and get_filename_list("loras") would scan the full directory on RH.
+    # @routes.get("/feihou_easy_h3_rh/loras")
+    # async def _feihou_easy_h3_loras(request):
+    #     try:
+    #         return web.json_response({"ok": True, "loras": folder_paths.get_filename_list("loras")})
+    #     except Exception as exc:
+    #         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
     @routes.post("/feihou_easy_h3_rh/prompt_optimize")
     async def _prompt_optimize(request):
@@ -1782,16 +2107,22 @@ def _filtered_choices(category: str, needles: tuple[str, ...], fallback: str) ->
     return _sort_model_names(selected) or [fallback]
 
 
-def _model_choices() -> list[str]:
-    return _all_weight_choices(("diffusion_models", "unet", "unet_gguf"), "", optional=True)
+def _rh_unet_model_combo() -> tuple:
+    """Empty UNET combo for RH resource popup.
 
-
-def _ref_model_choices() -> list[str]:
-    return _all_weight_choices(("diffusion_models", "unet", "unet_gguf"), "", optional=True)
+    Do not dump ``get_filename_list("unet"|"diffusion_models"|"unet_gguf")``
+    into Combo options: RH does not strip those lists from object_info, so a
+    single node can inflate ``nodes_info`` by hundreds of KB. GGUF filenames
+    from saved workflows still execute via ``VALIDATE_INPUTS``.
+    """
+    return ([], {
+        "default": NONE_MODEL,
+        "rh_resource_model_picker": "UNET",
+    })
 
 
 def _clip_choices() -> list[str]:
-    return _all_weight_choices(("text_encoders", "clip", "clip_gguf"), "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
+    return _all_weight_choices(("text_encoders"), "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
 
 
 def _vae_choices(needles: tuple[str, ...], fallback: str) -> list[str]:
@@ -1860,44 +2191,53 @@ class MiniMaxH3Bundle:
     lora_stack: tuple[tuple[str, float], ...] = ()
     fl2va_model_obj: Any = None
     ref2va_model_obj: Any = None
+    second_sampling_enabled: bool = False
+    second_fl2va_model_name: str = NONE_MODEL
+    second_ref2va_model_name: str = NONE_MODEL
+    second_sampling_use_lora: bool = True
 
     def __post_init__(self) -> None:
         self._model = None
         self._model_kind = ""
         self._model_name = ""
         self._model_cache_key: tuple[str, Any] | None = None
+        self._second_model = None
+        self._second_model_kind = ""
+        self._second_model_name = ""
+        self._second_model_cache_key: tuple[str, Any] | None = None
         self._loaded_loras: dict[str, tuple[int, int, Any]] = {}
         self._lock = threading.RLock()
 
-    def _model_name_for(self, kind: str) -> str:
-        """Return the preferred model, falling back to the other H3 model.
+    def _model_name_for(self, kind: str, *, allow_fallback: bool = False) -> str:
+        """Return the transformer filename for this generation path.
 
-        FL2VA and REF2VA are exposed as separate choices when both are
-        installed, but a user may intentionally install only one of them for
-        testing. In that case, let the remaining transformer serve either
-        generation path instead of rejecting the mode before execution.
+        Reference mode must use REF2VA weights. Silently serving FL2VA here
+        produces text-to-video that ignores gallery images and videos.
+        Image / first-last mode may fall back to REF2VA when FL2VA is absent.
         """
         requested_kind = "ref2va" if kind == "ref2va" else "fl2va"
         preferred = self.ref2va_model_name if requested_kind == "ref2va" else self.fl2va_model_name
         if not _is_none_model(preferred):
             return preferred
 
-        fallback = self.fl2va_model_name if requested_kind == "ref2va" else self.ref2va_model_name
-        if not _is_none_model(fallback):
-            return fallback
+        if allow_fallback:
+            fallback = self.fl2va_model_name if requested_kind == "ref2va" else self.ref2va_model_name
+            if not _is_none_model(fallback):
+                return fallback
 
         if requested_kind == "ref2va":
-            raise ValueError("Reference Video mode requires at least one MiniMax H3 transformer model.")
-        raise ValueError("Text-to-video and I2V or First/Last Frame mode require at least one MiniMax H3 transformer model.")
+            raise ValueError("参考生视频必须选择 REF2VA 模型，不能用 FL2VA 代替。")
+        raise ValueError("图生/首尾帧模式需要 FL2VA 或 REF2VA 模型。")
 
-    def _model_object_for(self, kind: str):
-        """Return an already-loaded transformer, falling back to the other role."""
+    def _model_object_for(self, kind: str, *, allow_fallback: bool = False):
+        """Return an already-loaded transformer for this role."""
         requested_kind = "ref2va" if kind == "ref2va" else "fl2va"
         preferred = self.ref2va_model_obj if requested_kind == "ref2va" else self.fl2va_model_obj
         if preferred is not None:
             return preferred
-        fallback = self.fl2va_model_obj if requested_kind == "ref2va" else self.ref2va_model_obj
-        return fallback
+        if allow_fallback:
+            return self.fl2va_model_obj if requested_kind == "ref2va" else self.ref2va_model_obj
+        return None
 
     def _load_lora(self, name: str):
         path = folder_paths.get_full_path_or_raise("loras", name)
@@ -1922,15 +2262,23 @@ class MiniMaxH3Bundle:
             result, _clip = loader(result, None, lora, float(strength), 0.0)
         return result
 
+    def release_lora_cache(self) -> None:
+        """Release raw LoRA tensors after adapters have been attached."""
+        with self._lock:
+            self._loaded_loras.clear()
+        gc.collect()
+        comfy.model_management.soft_empty_cache()
+
     def model_for(self, kind: str):
         kind = "ref2va" if kind == "ref2va" else "fl2va"
+        allow_fallback = kind != "ref2va"
         with self._lock:
-            supplied_model = self._model_object_for(kind)
+            supplied_model = self._model_object_for(kind, allow_fallback=allow_fallback)
             if supplied_model is not None:
-                model_name = ""
+                model_name = self.ref2va_model_name if kind == "ref2va" else self.fl2va_model_name
                 cache_key = ("object", id(supplied_model))
             else:
-                model_name = self._model_name_for(kind)
+                model_name = self._model_name_for(kind, allow_fallback=allow_fallback)
                 cache_key = ("file", model_name)
             if self._model is not None and self._model_cache_key == cache_key:
                 return self._model
@@ -1952,7 +2300,116 @@ class MiniMaxH3Bundle:
             self._model_kind = kind
             self._model_name = model_name
             self._model_cache_key = cache_key
+            if kind == "ref2va" and model_name and not _has_role(model_name, "ref2va"):
+                raise ValueError(f"参考生视频加载到了非 REF2VA 权重: {model_name}")
+            _LOGGER.info("FeiHouEasyH3 loaded %s from %s", kind, model_name or "supplied MODEL object")
             return self._model
+
+    def second_sampling_model_for(self, kind: str):
+        """Load the optional second-pass transformer only when its output is used."""
+        if not self.second_sampling_enabled:
+            return None
+        kind = "ref2va" if kind == "ref2va" else "fl2va"
+        model_name = self.second_ref2va_model_name if kind == "ref2va" else self.second_fl2va_model_name
+        if _is_none_model(model_name):
+            return None
+        cache_key = ("file", model_name)
+        with self._lock:
+            if self._second_model is not None and self._second_model_cache_key == cache_key:
+                model = self._second_model
+            else:
+                if self._second_model is not None:
+                    self._second_model = None
+                    self._second_model_kind = ""
+                    self._second_model_name = ""
+                    self._second_model_cache_key = None
+                    comfy.model_management.soft_empty_cache()
+                if _is_gguf_file(model_name):
+                    base_model = _load_gguf_unet(model_name)
+                else:
+                    base_model, = nodes.UNETLoader().load_unet(model_name, "default")
+                model = self._apply_loras(base_model) if self.second_sampling_use_lora else base_model
+                self._second_model = model
+                self._second_model_kind = kind
+                self._second_model_name = model_name
+                self._second_model_cache_key = cache_key
+            if kind == "ref2va" and model_name and not _has_role(model_name, "ref2va"):
+                raise ValueError(f"参考生视频二采加载到了非 REF2VA 权重: {model_name}")
+            first_model = self._model
+            if first_model is not None and first_model is not model:
+                setattr(model, "_feihou_h3_unload_before_second_sampling", first_model)
+            if getattr(self, "force_offload_enabled", False):
+                setattr(model, "_feihou_h3_release_auxiliary_before_second_sampling", self)
+            if not self.second_sampling_use_lora:
+                setattr(model, "_feihou_h3_release_lora_cache_before_second_sampling", self)
+            return model
+
+
+def _install_second_sampling_memory_hook() -> None:
+    try:
+        import comfy.sampler_helpers as sampler_helpers
+    except Exception:
+        return
+    original = getattr(sampler_helpers, "prepare_sampling", None)
+    if not callable(original) or getattr(original, "_feihou_h3_second_sampling_hook", False):
+        return
+
+    def prepare_sampling_with_h3_second_pass_release(model, *args, **kwargs):
+        first_model = getattr(model, "_feihou_h3_unload_before_second_sampling", None)
+        if first_model is not None:
+            try:
+                delattr(model, "_feihou_h3_unload_before_second_sampling")
+            except AttributeError:
+                pass
+            if first_model is not model:
+                try:
+                    comfy.model_management.unload_model_and_clones(first_model, unload_additional_models=False)
+                    _LOGGER.info("Easy H3: released first-pass transformer before second-pass sampling")
+                except Exception as exc:
+                    _LOGGER.warning("Easy H3: unable to release first-pass transformer before second sampling: %s", exc)
+        auxiliary_owner = getattr(model, "_feihou_h3_release_auxiliary_before_second_sampling", None)
+        if auxiliary_owner is not None:
+            try:
+                delattr(model, "_feihou_h3_release_auxiliary_before_second_sampling")
+            except AttributeError:
+                pass
+            _release_auxiliary_models_for_sampling(auxiliary_owner, phase="second-pass sampling")
+        lora_owner = getattr(model, "_feihou_h3_release_lora_cache_before_second_sampling", None)
+        if lora_owner is not None:
+            try:
+                delattr(model, "_feihou_h3_release_lora_cache_before_second_sampling")
+            except AttributeError:
+                pass
+            try:
+                lora_owner.release_lora_cache()
+                _LOGGER.info("Easy H3: released LoRA cache before second-pass sampling")
+            except Exception as exc:
+                _LOGGER.warning("Easy H3: unable to release LoRA cache before second sampling: %s", exc)
+        return original(model, *args, **kwargs)
+
+    prepare_sampling_with_h3_second_pass_release._feihou_h3_second_sampling_hook = True
+    sampler_helpers.prepare_sampling = prepare_sampling_with_h3_second_pass_release
+
+
+_install_second_sampling_memory_hook()
+
+
+def _release_auxiliary_models_for_sampling(bundle: MiniMaxH3Bundle, phase: str = "sampling") -> None:
+    """Optionally release CLIP and AV VAEs after conditioning is materialized."""
+    released = []
+    seen_patchers = set()
+    for label, component in (("CLIP", bundle.clip), ("video VAE", bundle.video_vae), ("audio VAE", bundle.audio_vae)):
+        patcher = getattr(component, "patcher", None)
+        if patcher is None or id(patcher) in seen_patchers:
+            continue
+        seen_patchers.add(id(patcher))
+        try:
+            comfy.model_management.unload_model_and_clones(patcher, unload_additional_models=False)
+            released.append(label)
+        except Exception as exc:
+            _LOGGER.debug("Easy H3: unable to release %s before sampling: %s", label, exc)
+    if released:
+        _LOGGER.info("Easy H3: released %s from VRAM before %s", ", ".join(released), phase)
 
 
 @dataclass(frozen=True)
@@ -1970,6 +2427,7 @@ class _MediaInput:
     input_index: int
     media_type: str
     value: Any
+    filename: str = ""
 
 
 class _AnyType(str):
@@ -2026,11 +2484,18 @@ class FeiHouEasyH3LoraStack:
 
     @classmethod
     def INPUT_TYPES(cls):
+        # LoRA files are picked via the RH LORA resource popup on the frontend
+        # (custom stack widgets, not Combo). Keep schema empty of get_filename_list
+        # so nodes_info does not dump the full loras directory.
         optional = _FlexibleOptionalInputType(
             _ANY_TYPE,
             {"optional_lora_stack": (LORA_STACK_TYPE,)},
         )
         return {"required": {}, "optional": optional}
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
 
     def stack(self, optional_lora_stack=None, **kwargs):
         result = list(_normalize_lora_stack(optional_lora_stack))
@@ -2052,11 +2517,15 @@ class FeiHouEasyH3Loader:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "fl2va_model": (_model_choices(),),
-                "ref2va_model": (_ref_model_choices(),),
+                "fl2va_model": _rh_unet_model_combo(),
+                "ref2va_model": _rh_unet_model_combo(),
                 "text_encoder": (_clip_choices(),),
                 "video_vae": (_vae_choices(("minimax_h3_video_vae",), "minimax_h3_video_vae_fp16.safetensors"),),
                 "audio_vae": (_vae_choices(("minimax_h3_audio_vae",), "minimax_h3_audio_vae_fp32.safetensors"),),
+                "custom_second_sampling_models": ("BOOLEAN", {"default": False}),
+                "second_fl2va_model": _rh_unet_model_combo(),
+                "second_ref2va_model": _rh_unet_model_combo(),
+                "second_sampling_use_lora": ("BOOLEAN", {"default": True}),
             },
             "optional": {
                 "lora_stack": (LORA_STACK_TYPE,),
@@ -2064,11 +2533,21 @@ class FeiHouEasyH3Loader:
         }
 
     @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        # Empty UNET Combo options would otherwise fail with value_not_in_list.
+        return True
+
+    @classmethod
     def IS_CHANGED(cls, **kwargs):
-        base = "|".join(str(kwargs.get(key, "")) for key in ("fl2va_model", "ref2va_model", "text_encoder", "video_vae", "audio_vae"))
+        base = "|".join(str(kwargs.get(key, "")) for key in (
+            "fl2va_model", "ref2va_model", "text_encoder", "video_vae", "audio_vae",
+            "custom_second_sampling_models", "second_fl2va_model", "second_ref2va_model", "second_sampling_use_lora",
+        ))
         return base + "|" + json.dumps(_normalize_lora_stack(kwargs.get("lora_stack")), ensure_ascii=False)
 
-    def load(self, fl2va_model, ref2va_model, text_encoder, video_vae, audio_vae, lora_stack=None):
+    def load(self, fl2va_model, ref2va_model, text_encoder, video_vae, audio_vae,
+             custom_second_sampling_models=False, second_fl2va_model=NONE_MODEL,
+             second_ref2va_model=NONE_MODEL, second_sampling_use_lora=True, lora_stack=None):
         if _is_none_model(fl2va_model) and _is_none_model(ref2va_model):
             raise ValueError("Select at least one MiniMax H3 transformer: FL2VA or REF2VA.")
         clip = _load_text_encoder(text_encoder)
@@ -2084,6 +2563,10 @@ class FeiHouEasyH3Loader:
             video_vae=video_vae_obj,
             audio_vae=audio_vae_obj,
             lora_stack=_normalize_lora_stack(lora_stack),
+            second_sampling_enabled=_as_bool(custom_second_sampling_models),
+            second_fl2va_model_name=second_fl2va_model,
+            second_ref2va_model_name=second_ref2va_model,
+            second_sampling_use_lora=_as_bool(second_sampling_use_lora),
         ),)
 
 
@@ -2203,12 +2686,25 @@ def _encode_reference_audio(audio_vae, audio: Mapping):
     return latent, latent.shape[-1]
 
 
+def _replace_display_reference_tags(source: str, kind_tags: Mapping[str, Mapping[int, str]]) -> str:
+    def replacer(match: re.Match[str]) -> str:
+        kind_raw = str(match.group("kind") or match.group("kind2") or "")
+        number = int(match.group("num") or match.group("num2") or 0)
+        kind = DISPLAY_REFERENCE_KIND.get(kind_raw) or DISPLAY_REFERENCE_KIND.get(kind_raw.lower())
+        if not kind or number < 1:
+            return match.group(0)
+        return kind_tags.get(kind, {}).get(number) or match.group(0)
+
+    return DISPLAY_REFERENCE_RE.sub(replacer, source)
+
+
 def _resolve_reference_prompt(
     prompt: str,
     tag_by_input: dict[int, str],
     soundtrack_pairs: list[tuple[int, int]],
     video_count: int,
     standalone_audio_count: int,
+    kind_tags: Mapping[str, Mapping[int, str]] | None = None,
 ) -> str:
     # A workflow may intentionally contain fewer/more @ references than the
     # currently connected media. Resolve valid placeholders, but preserve
@@ -2219,13 +2715,20 @@ def _resolve_reference_prompt(
         lambda match: tag_by_input.get(int(match.group(1)), ""),
         source_prompt,
     )
+    resolved = _replace_display_reference_tags(resolved, kind_tags or {})
     if soundtrack_pairs and (video_count > 1 or standalone_audio_count > 0):
         provenance = [
             f"<Audio {audio_index}> is the synchronized audio track of <Video {video_index}>."
             for audio_index, video_index in soundtrack_pairs
         ]
-        return "\n".join((*provenance, resolved))
-    return resolved
+        resolved = "\n".join((*provenance, resolved))
+    # A leftover optimizer essay can describe a previous gallery image.
+    # Tell the encoder that tagged media win over conflicting prose.
+    return (
+        "Use the tagged reference media as the only visual and audio identity. "
+        "If any later description conflicts with what those media actually show, follow the media.\n"
+        + resolved
+    )
 
 
 def _align_canvas_dimension(value: float) -> int:
@@ -2279,11 +2782,13 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     ref_items = []
     ref_blocks = []
     tag_by_input: dict[int, str] = {}
+    kind_tags: dict[str, dict[int, str]] = {"image": {}, "video": {}, "audio": {}}
     soundtrack_pairs: list[tuple[int, int]] = []
     images = [item for item in items if item.media_type == "image"]
     videos = [item for item in items if item.media_type == "video"]
     audios = [item for item in items if item.media_type == "audio"]
     audio_ordinal = 0
+    standalone_audio_ordinal = 0
 
     # Match the official H3 presentation order: images, videos (with each
     # synchronized soundtrack immediately before its video), standalone audio.
@@ -2292,22 +2797,25 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         if not isinstance(image, torch.Tensor) or image.ndim != 4:
             raise ValueError("Image references must be IMAGE tensors")
         image_h, image_w = image.shape[1], image.shape[2]
-        size_mode = str(ref_image_size or REF_IMAGE_DEFAULT)
-        legacy_short_edges = {"match": 480, "1k": 1024, "1.5k": 1088, "2k": 1088, "original": 1088}
-        try:
-            short_edge = int(size_mode)
-        except ValueError:
-            short_edge = legacy_short_edges.get(size_mode, int(REF_IMAGE_DEFAULT))
-        if str(short_edge) not in REFERENCE_SHORT_EDGES:
-            short_edge = min((int(value) for value in REFERENCE_SHORT_EDGES), key=lambda value: abs(value - short_edge))
-        # Resize proportionally so the selected short edge is authoritative,
-        # then choose the nearest H3-compatible 32-pixel canvas.
-        scale = short_edge / max(1, min(image_w, image_h))
-        target_w, target_h = _reference_aligned_size(image_w, image_h, scale)
+        size_mode = str(ref_image_size or REF_IMAGE_DEFAULT).strip().lower()
+        # Official MiniMaxH3ReferenceToVideo: "match" = downscale to output
+        # area; anything else uses a short-edge cap and never upscales.
+        if size_mode in {"match", "匹配"}:
+            scale = min(1.0, math.sqrt((width * height) / max(1, image_w * image_h)))
+        else:
+            try:
+                short_edge = int(size_mode)
+            except ValueError:
+                short_edge = int(getattr(h3, "REF_IMAGE_SHORT_EDGE", 2048))
+            scale = min(1.0, short_edge / max(1, min(image_w, image_h)))
+        target_w = max(h3.CANVAS_MULTIPLE, round(image_w * scale / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
+        target_h = max(h3.CANVAS_MULTIPLE, round(image_h * scale / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
         resized = h3._resize(image[:1], target_w, target_h, "disabled")
         ref_items.append({"type": "image", "data": resized})
         ref_blocks.append({"kind": "image", "latent_h": target_h // 16, "latent_w": target_w // 16, "latent": bundle.video_vae.encode(resized)})
-        tag_by_input[item.input_index] = f"<Picture {picture_ordinal}>"
+        tag = f"<Picture {picture_ordinal}>"
+        tag_by_input[item.input_index] = tag
+        kind_tags["image"][picture_ordinal] = tag
 
     for video_ordinal, item in enumerate(videos, start=1):
         frames, soundtrack, source_fps = _video_parts(item.value)
@@ -2349,16 +2857,21 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
             "latent": video_latent,
             "audio_latent": audio_latent,
         })
-        tag_by_input[item.input_index] = f"<Video {video_ordinal}>"
+        tag = f"<Video {video_ordinal}>"
+        tag_by_input[item.input_index] = tag
+        kind_tags["video"][video_ordinal] = tag
 
     for item in audios:
         if not isinstance(item.value, Mapping) or "waveform" not in item.value:
             raise ValueError("Audio references must be AUDIO payloads")
         audio_latent, audio_t = _encode_reference_audio(bundle.audio_vae, item.value)
         audio_ordinal += 1
+        standalone_audio_ordinal += 1
         ref_items.append({"type": "audio"})
         ref_blocks.append({"kind": "audio", "ref_audio_t": audio_t, "audio_latent": audio_latent})
-        tag_by_input[item.input_index] = f"<Audio {audio_ordinal}>"
+        tag = f"<Audio {audio_ordinal}>"
+        tag_by_input[item.input_index] = tag
+        kind_tags["audio"][standalone_audio_ordinal] = tag
 
     if not ref_items or all(item.get("type") == "audio" for item in ref_items):
         raise ValueError("Reference mode needs at least one image or video")
@@ -2369,6 +2882,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         soundtrack_pairs,
         len(videos),
         len(audios),
+        kind_tags,
     )
 
     tokens = bundle.clip.tokenize(resolved_prompt, minimax_ref_items=ref_items)
@@ -2380,8 +2894,8 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
 class FeiHouEasyH3:
     CATEGORY = "FeiHou Easy H3"
     FUNCTION = "generate"
-    RETURN_TYPES = ("MODEL", "MINIMAX_H3_CONTEXT")
-    RETURN_NAMES = ("model", "h3_context")
+    RETURN_TYPES = ("MODEL", "MODEL", "MINIMAX_H3_CONTEXT")
+    RETURN_NAMES = ("model", "second_sampling_model", "h3_context")
     DESCRIPTION = "MiniMax H3 generation with an embedded 9-image, 3-video and 3-audio media gallery."
 
     @classmethod
@@ -2395,6 +2909,8 @@ class FeiHouEasyH3:
             optional[f"media_{index}"] = ("STRING", {"default": "", "hidden": True})
             optional[f"media_type_{index}"] = ("STRING", {"default": "", "hidden": True})
         optional["prompt_optimizer_applied"] = ("BOOLEAN", {"default": False, "hidden": True})
+        optional["second_sampling_output_connected"] = ("BOOLEAN", {"default": False, "hidden": True})
+        optional["embedded_media_json"] = ("STRING", {"default": "", "multiline": True, "hidden": True})
         return {
             "required": {
                 "h3_bundle": ("MINIMAX_H3_BUNDLE",),
@@ -2416,26 +2932,35 @@ class FeiHouEasyH3:
                 "prompt_optimizer_api_key": ("STRING", {"default": "", "multiline": False, "password": True}),
                 "prompt_optimizer_model": ("STRING", {"default": "", "multiline": False}),
                 "prompt_optimizer_scene_guide": (prompt_schemes, {"default": default_prompt_scheme}),
+                "force_offload": ("BOOLEAN", {"default": False}),
             },
             "optional": optional,
+            "hidden": {
+                "unique_id": "UNIQUE_ID",
+                "extra_pnginfo": "EXTRA_PNGINFO",
+            },
         }
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("nan")
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
+
     @staticmethod
-    def _collect_media(kwargs: dict) -> list[_MediaInput]:
+    def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None) -> list[_MediaInput]:
         items = []
-        for index in range(1, MAX_MEDIA + 1):
-            value = kwargs.get(f"media_{index}")
-            if value is None or (isinstance(value, str) and not value.strip()):
-                continue
-            media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
-            resolved_type = media_type if media_type in {"image", "video", "audio"} else _infer_media_type(value)
-            if isinstance(value, str):
-                value = _load_embedded_media(value, resolved_type)
-            items.append(_MediaInput(index, resolved_type, value))
+        for index, record in enumerate(_media_records_from_inputs(kwargs, extra_pnginfo, unique_id), start=1):
+            value = record.get("value")
+            media_type = str(record.get("media_type") or "")
+            if value is None:
+                filename = str(record.get("filename") or "").strip()
+                if not filename:
+                    continue
+                value = _load_embedded_media(filename, media_type)
+            items.append(_MediaInput(index, media_type, value, str(record.get("filename") or "")))
         return items
 
     @staticmethod
@@ -2456,11 +2981,17 @@ class FeiHouEasyH3:
         return images[0], images[1]
 
     @classmethod
-    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", prompt_optimizer_applied=False, **kwargs):
+    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", force_offload=False, prompt_optimizer_applied=False, embedded_media_json="", extra_pnginfo=None, unique_id=None, **kwargs):
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
-        mode = str(mode)
-        keyframe_role = KEYFRAME_LAST if str(keyframe_role) == KEYFRAME_LAST else KEYFRAME_FIRST
+        h3_bundle.force_offload_enabled = _as_bool(force_offload)
+        second_sampling_connected = _as_bool(kwargs.get("second_sampling_output_connected", False))
+        if embedded_media_json and "embedded_media_json" not in kwargs:
+            kwargs["embedded_media_json"] = embedded_media_json
+        mode = _canonical_mode(mode)
+        if mode not in {MODE_IMAGE, MODE_REFERENCE}:
+            raise ValueError(f"Unsupported mode: {mode}")
+        keyframe_role = _canonical_keyframe_role(keyframe_role)
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
         seconds = min(MAX_SECONDS, max(MIN_SECONDS, float(seconds)))
         length = _frame_length(seconds, fps)
@@ -2477,14 +3008,30 @@ class FeiHouEasyH3:
                     str(prompt_optimizer_api_key),
                     str(prompt_optimizer_model),
                     str(prompt_optimizer_scene_guide or "none"),
-                    _media_counts_from_kwargs(kwargs),
-                    _optimizer_resources_from_kwargs(kwargs),
+                    _media_counts_from_kwargs(kwargs, extra_pnginfo, unique_id),
+                    _optimizer_resources_from_kwargs(kwargs, extra_pnginfo, unique_id),
                     ref_image_size,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Easy H3 提示词扩写/反推失败: {exc}") from exc
-        items = cls._collect_media(kwargs)
-        if mode == MODE_REFERENCE and items:
+        items = cls._collect_media(kwargs, extra_pnginfo, unique_id)
+        media_desc = ", ".join(
+            f"{item.media_type}:{item.filename or 'tensor'}" for item in items
+        ) or "(none)"
+        _LOGGER.info(
+            "FeiHouEasyH3 generate unique_id=%s mode=%s extra_pnginfo=%s media=[%s] prompt_head=%r",
+            unique_id,
+            mode,
+            type(extra_pnginfo).__name__ if extra_pnginfo is not None else None,
+            media_desc,
+            str(prompt or "")[:160],
+        )
+        if mode == MODE_REFERENCE:
+            if not items:
+                raise ValueError(
+                    "参考生视频模式需要至少一张参考图或一段参考视频。"
+                    "画廊素材未传到执行端，请重新保存工作流后再运行。"
+                )
             if len(items) > MAX_MEDIA:
                 raise ValueError("Reference mode accepts at most fifteen media resources")
             counts = {"image": 0, "video": 0, "audio": 0}
@@ -2499,10 +3046,31 @@ class FeiHouEasyH3:
             model = h3_bundle.model_for("ref2va")
             conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items)
         else:
-            first_frame, last_frame = cls._keyframes(items, keyframe_role)
+            image_items = [item for item in items if item.media_type == "image"]
+            first_frame, last_frame = cls._keyframes(image_items, keyframe_role)
             model = h3_bundle.model_for("fl2va")
             conditioning, latent = _empty_image_conditioning(h3_bundle, prompt, width, height, length, first_frame, last_frame)
             prompt_preview = str(prompt or "")
+        model_name = getattr(h3_bundle, "_model_name", "") or ""
+        _LOGGER.info(
+            "FeiHouEasyH3 using model_kind=%s model_name=%s refs=%s",
+            getattr(h3_bundle, "_model_kind", ""),
+            model_name,
+            bool(mode == MODE_REFERENCE and items),
+        )
+        prompt_preview = (
+            f"[EasyH3 mode={mode} model={model_name or '?'} media={media_desc}]\n"
+            + str(prompt_preview or "")
+        )
+        second_sampling_model = None
+        if h3_bundle.second_sampling_enabled:
+            second_kind = "ref2va" if mode == MODE_REFERENCE else "fl2va"
+            second_model_name = h3_bundle.second_ref2va_model_name if second_kind == "ref2va" else h3_bundle.second_fl2va_model_name
+            if _is_none_model(second_model_name):
+                model_label = "REF2VA" if second_kind == "ref2va" else "FL2VA"
+                raise ValueError(f"“自定义二采模型”已开启，但未选择 {model_label} 二采模型。请选择模型，或关闭该开关。")
+            if second_sampling_connected:
+                second_sampling_model = h3_bundle.second_sampling_model_for(second_kind)
         context = MiniMaxH3Context(
             conditioning=conditioning,
             latent=latent,
@@ -2511,7 +3079,12 @@ class FeiHouEasyH3:
             fps=float(fps),
             prompt_preview=prompt_preview,
         )
-        return model, context
+        if h3_bundle.force_offload_enabled:
+            _release_auxiliary_models_for_sampling(h3_bundle, phase="first-pass sampling")
+            if h3_bundle.lora_stack:
+                h3_bundle.release_lora_cache()
+                _LOGGER.info("Easy H3: released raw LoRA cache from RAM before first-pass sampling")
+        return model, second_sampling_model, context
 
 
 class FeiHouEasyH3Output:

@@ -20,7 +20,6 @@ import { rgthreeApi } from "../../rgthree/common/rgthree_api.js";
 import { moveArrayItem, removeArrayItem } from "../../rgthree/common/shared_utils.js";
 
 const STACK_CLASS = "FeiHouEasyH3RHLoraStack";
-const STACK_TITLE = "加载LoRA（旁路，仅模型）（用于调试）";
 const STACK_WIDTH = 440;
 const BOTTOM_MARGIN = 14;
 
@@ -31,6 +30,41 @@ function isChineseLocale() {
 
 function t(zh, en) {
     return isChineseLocale() ? zh : en;
+}
+
+function stackTitle() {
+    return t("加载LoRA（旁路，仅模型）（用于调试）", "Load LoRA (Bypass, Model Only) (Debug)");
+}
+
+function localizeLoraSlots(node) {
+    for (const input of node?.inputs || []) {
+        if (input?.name === "optional_lora_stack") {
+            input.label = t("可选 LoRA 堆栈", "Optional LoRA stack");
+            input.localized_name = input.label;
+        }
+    }
+    for (const output of node?.outputs || []) {
+        if (output?.name === "lora_stack") {
+            output.label = t("LoRA 堆栈", "LoRA stack");
+            output.localized_name = output.label;
+        }
+    }
+}
+
+function isRhPlatform() {
+    return typeof window.parent?.handleOpenResourceModal === "function";
+}
+
+function openRhLoraPicker(node, onSelect) {
+    node.onLoRASelect = (_versionId, resourceName) => {
+        const value = resourceName && String(resourceName).toLowerCase() !== "none"
+            ? String(resourceName)
+            : null;
+        onSelect(value);
+        node.setDirtyCanvas(true, true);
+    };
+    window.currentPickCKPTNode = node;
+    window.parent.handleOpenResourceModal("choice", "LORA");
 }
 
 function normalizeLoraValue(value) {
@@ -63,15 +97,16 @@ function migrateLoraValues(values) {
 }
 
 class FeiHouEasyH3LoraStackNode extends RgthreeBaseServerNode {
-    constructor(title = STACK_TITLE) {
+    constructor(title = stackTitle()) {
         super(title);
         this.loraWidgetsCounter = 0;
         this.widgetButtonSpacer = null;
-        rgthreeApi.getLoras();
+        if (!isRhPlatform()) rgthreeApi.getLoras();
     }
 
     configure(info) {
         const values = migrateLoraValues(info?.widgets_values || []);
+        this.title = stackTitle();
         while (this.widgets?.length) this.removeWidget(0);
         this.widgetButtonSpacer = null;
         this.loraWidgetsCounter = 0;
@@ -81,12 +116,15 @@ class FeiHouEasyH3LoraStackNode extends RgthreeBaseServerNode {
             row.value = value;
         }
         this.addNonLoraWidgets();
+        localizeLoraSlots(this);
         this.resizeToContent();
     }
 
     onNodeCreated() {
         super.onNodeCreated?.();
+        this.title = stackTitle();
         this.addNonLoraWidgets();
+        localizeLoraSlots(this);
         this.resizeToContent();
         this.setDirtyCanvas(true, true);
     }
@@ -131,6 +169,10 @@ class FeiHouEasyH3LoraStackNode extends RgthreeBaseServerNode {
     }
 
     async showLoraChooser(event, onChoose) {
+        if (isRhPlatform()) {
+            openRhLoraPicker(this, onChoose);
+            return;
+        }
         const details = await rgthreeApi.getLoras();
         const loras = details.map((item) => item.file);
         showLoraChooser(
@@ -239,7 +281,7 @@ class FeiHouEasyH3LoraStackNode extends RgthreeBaseServerNode {
     }
 }
 
-FeiHouEasyH3LoraStackNode.title = STACK_TITLE;
+FeiHouEasyH3LoraStackNode.title = stackTitle();
 FeiHouEasyH3LoraStackNode.type = STACK_CLASS;
 FeiHouEasyH3LoraStackNode.comfyClass = STACK_CLASS;
 
@@ -393,6 +435,12 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
 
 app.registerExtension({
     name: "FeiHouEasyH3RH.NativeLoraStack",
+    // RH change --start--
+    rh: {
+        type: "nodes",
+        nodes: ["FeiHouEasyH3RHLoraStack"],
+    },
+    // RH change --end--
     async beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name === STACK_CLASS) FeiHouEasyH3LoraStackNode.setUp(nodeType, nodeData);
     },

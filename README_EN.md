@@ -18,6 +18,8 @@ The main node provides:
 - reference-image short-edge presets of 480, 544, 640, 736, 768, 832, 928, 1024, and 1088;
 - direct node-level prompt-optimizer settings with automatic API detection, plus OpenAI-compatible and native Gemini overrides;
 - bundled prompt guides only (no user-defined prompt schemes or global API settings page).
+- optional second-pass model output, with explicit wiring validation and an option to skip LoRA for that pass;
+- a **Force offload** switch that releases CLIP, VAEs, and cached LoRAs after conditioning to reduce sampling-time VRAM pressure.
 
 In the RH build, enable Advanced options and then Prompt optimization settings to enter the API URL, key, and model directly on the node. The API type is detected automatically by default, with OpenAI-compatible and native Gemini overrides when needed. Only bundled prompt guides remain; Ollama and global API/settings pages are not included. The ✦ action, runtime prompt optimization, and H3 Context prompt-preview output are retained.
 
@@ -48,6 +50,6 @@ The package uses unique `FeiHouEasyH3RH*` node IDs and dedicated prompt-optimize
 
 This is a **modified work**, not an independent reimplementation. Its H3-node upstream source is [ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy) by `nkxx188`, which is MIT-licensed. Its original copyright notice and MIT text are retained in [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt). The original project asks substantial reuses/adaptations to credit `nkxx188` and `ComfyUI-MiniMaxH3-Easy`; this repository does so in the node header, this README, [NOTICE](NOTICE), and every release.
 
-FeiHou-specific changes include the fixed 9-image / 3-video / 3-audio embedded gallery, gallery upload/persistence, FeiHou LoRA Stack integration, settings-page API and prompt-rule management, configured service/model selection, runtime prompt optimization, and prompt-preview outputs. Reference conditioning follows ComfyUI's official `MiniMax H3 Reference to Video` behavior and limits: 9 images, 3 videos, and 3 standalone audio clips.
+FeiHou-specific changes include the fixed 9-image / 3-video / 3-audio embedded gallery, gallery upload/persistence, FeiHou LoRA Stack integration, node-level API configuration, runtime prompt optimization, optional second-pass sampling, and prompt-preview outputs. Reference conditioning follows ComfyUI's official `MiniMax H3 Reference to Video` behavior and limits: 9 images, 3 videos, and 3 standalone audio clips.
 
 The complete license and preservation notice are in [LICENSE](LICENSE) and [NOTICE](NOTICE). The software is provided as-is, without warranty.

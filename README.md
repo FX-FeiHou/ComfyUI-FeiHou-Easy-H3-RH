@@ -20,6 +20,8 @@
 - 打开高级选项后可见“提示词优化设置”；开启后直接在节点内填写 API 地址、Key 与模型名，接口类型可自动识别，也可手动指定 OpenAI 兼容或 Gemini 原生；
 - 保留内置提示词方案，不提供自定义方案、全局 API 设置页或 Ollama 选项；
 - 保留 ✦ 点击反推、工作流运行时自动反推，以及 H3 Context 的最终提示词预览输出。
+- 可选二次采样模型输出；二采开始前会释放一采 Transformer，且可关闭二采 LoRA；
+- 提供“强制卸载”开关：条件准备完成后可将 CLIP、VAE 与 LoRA 缓存释放出显存，以降低采样阶段显存压力。
 
 > **安全提示**：RH 版将 API Key 存在节点工作流参数中，导出或分享工作流前请清除 Key，或使用权限受限、可随时撤销的 Key。
 
@@ -60,6 +62,6 @@
 
 本项目是改编版本，并非独立重写。H3 节点上游来源为 [nkxx188/ComfyUI-MiniMaxH3-Easy](https://github.com/nkxx188/ComfyUI-MiniMaxH3-Easy)，原作者为 `nkxx188`，采用 MIT License；其 MIT 文本和版权声明保留在 [LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt](LICENSES/MIT-ComfyUI-MiniMaxH3-Easy.txt)。上游项目要求对实质性复用或改编保留作者与项目署名；本仓库已在节点头部、README、[NOTICE](NOTICE) 和 Release 中明确保留该声明。
 
-FeiHou 的改动包括：固定 9 图 / 3 视频 / 3 音频的内嵌媒体面板、上传与工作流持久化、FeiHou LoRA Stack 接入、ComfyUI 设置页内的 API 与提示词规则管理、服务/模型选择、运行时提示词扩写/反推，以及提示词预览输出。参考素材的 conditioning 规则及数量限制仍遵循 ComfyUI 官方 `MiniMax H3 Reference to Video` 行为。
+FeiHou 的改动包括：固定 9 图 / 3 视频 / 3 音频的内嵌媒体面板、上传与工作流持久化、FeiHou LoRA Stack 接入、节点内 API 配置、运行时提示词扩写/反推、可选二次采样与提示词预览输出。参考素材的 conditioning 规则及数量限制仍遵循 ComfyUI 官方 `MiniMax H3 Reference to Video` 行为。
 
 完整许可证和保留声明见 [LICENSE](LICENSE) 与 [NOTICE](NOTICE)。软件按“现状”提供，不附带任何担保。

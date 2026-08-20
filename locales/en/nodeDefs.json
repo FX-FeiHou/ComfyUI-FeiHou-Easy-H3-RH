@@ -1,0 +1,24 @@
+{
+  "FeiHouEasyH3RHLoraStack": { "display_name": "Load LoRA (Bypass, Model Only) (Debug)", "outputs": { "0": { "name": "LoRA stack" } } },
+  "FeiHouEasyH3RHLoader": {
+    "display_name": "FeiHou Easy H3 Loader",
+    "inputs": {
+      "fl2va_model": { "name": "FL2VA model" }, "ref2va_model": { "name": "REF2VA model" },
+      "text_encoder": { "name": "Text encoder" }, "video_vae": { "name": "Video VAE" }, "audio_vae": { "name": "Audio VAE" },
+      "custom_second_sampling_models": { "name": "Custom second-pass models" }, "second_fl2va_model": { "name": "Second-pass FL2VA model" },
+      "second_ref2va_model": { "name": "Second-pass REF2VA model" }, "second_sampling_use_lora": { "name": "Use LoRA for second pass" }
+    }, "outputs": { "0": { "name": "H3 model bundle" } }
+  },
+  "FeiHouEasyH3RH": {
+    "display_name": "ComfyUI-FeiHou-Easy-H3-RH",
+    "inputs": {
+      "h3_bundle": { "name": "H3 model bundle" }, "mode": { "name": "Mode", "options": { "image": "I2V or First/Last Frame", "reference": "Reference-to-video" } },
+      "prompt": { "name": "Prompt" }, "resolution": { "name": "Resolution" }, "aspect_ratio": { "name": "Aspect ratio" }, "width": { "name": "Width" }, "height": { "name": "Height" }, "seconds": { "name": "Seconds" }, "advanced": { "name": "Advanced options" }, "force_offload": { "name": "Force offload" }, "fps": { "name": "Frame rate (FPS)" },
+      "keyframe_role": { "name": "First/last frame setup", "options": { "first": "First frame priority", "last": "Last frame priority" } },
+      "ref_image_size": { "name": "Reference image size (short edge)" }, "reference_mention_mode": { "name": "@ reference mode", "options": { "filename": "By filename", "index": "By index" } },
+      "prompt_optimizer_enabled": { "name": "Prompt optimization" }, "prompt_optimizer_api_format": { "name": "API format (auto-detect)" }, "prompt_optimizer_api_url": { "name": "API URL" }, "prompt_optimizer_api_key": { "name": "API key" }, "prompt_optimizer_model": { "name": "Model" }, "prompt_optimizer_scene_guide": { "name": "Prompt Guide" }
+    }, "outputs": { "0": { "name": "Model" }, "1": { "name": "Second sampling model" }, "2": { "name": "H3 Context" } }
+  },
+  "FeiHouEasyH3RHOutput": { "display_name": "FeiHou Easy H3 Output · RH", "inputs": { "h3_context": { "name": "H3 Context" } }, "outputs": { "0": { "name": "Positive" }, "1": { "name": "Latent" }, "2": { "name": "Video VAE" }, "3": { "name": "Audio VAE" }, "4": { "name": "FPS" }, "5": { "name": "Prompt inference output" } } },
+  "FeiHouEasyH3RHPromptPreview": { "display_name": "FeiHou Easy H3 Prompt Preview · RH", "inputs": { "text": { "name": "Prompt inference output" } }, "outputs": { "0": { "name": "Text" } } }
+}

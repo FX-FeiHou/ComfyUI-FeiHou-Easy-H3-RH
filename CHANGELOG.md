@@ -1,15 +1,13 @@
 # Changelog
 
-## v1.3.3
+## v1.3.7
 
-- Embedded images, videos, and audio can now be dragged within their own galleries to change their reference order. The new order is saved in the workflow and used by H3 and prompt optimization.
-
-## v1.3.2
-
-- Fixes FeiHou Easy H3 Loader model dropdowns retaining a stale plugin-level
-  file list. Newly saved models under `models/diffusion_models` now appear the
-  next time ComfyUI refreshes node definitions, without requiring a further
-  server restart.
+- Rebased the RH edition on RunningHub's current developer-compatible media workflow: embedded-media parameters, COS-backed media resolution, and RH resource model pickers are retained without desktop-only model-folder scanning.
+- Adds optional second-pass sampling model output, explicit validation for second-pass wiring, and an option to skip LoRA during the second pass.
+- Adds **Force offload**: after conditioning, CLIP, video/audio VAE and cached LoRA resources can be released before sampling to reduce VRAM pressure; the normal ComfyUI placement policy remains available when it is off.
+- Improves the embedded 9-image / 3-video / 3-audio panel's responsive layout and prompt editor sizing.
+- Keeps prompt-optimization media compact and portable: images and video keyframes are resized only for the API request, JPEG-encoded at quality 85, and diagnostic logs redact credentials and media contents.
+- Removes an unused desktop-only settings script from the RH package. RH prompt API configuration remains entirely node-local.
 
 ## v1.3.1
 

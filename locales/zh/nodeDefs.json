@@ -1,0 +1,24 @@
+{
+  "FeiHouEasyH3RHLoraStack": { "display_name": "加载LoRA（旁路，仅模型）（用于调试）", "outputs": { "0": { "name": "LoRA 堆栈" } } },
+  "FeiHouEasyH3RHLoader": {
+    "display_name": "FeiHou Easy H3 加载器",
+    "inputs": {
+      "fl2va_model": { "name": "FL2VA 模型" }, "ref2va_model": { "name": "REF2VA 模型" },
+      "text_encoder": { "name": "文本编码器" }, "video_vae": { "name": "视频 VAE" }, "audio_vae": { "name": "音频 VAE" },
+      "custom_second_sampling_models": { "name": "自定义二采模型" }, "second_fl2va_model": { "name": "二采 FL2VA 模型" },
+      "second_ref2va_model": { "name": "二采 REF2VA 模型" }, "second_sampling_use_lora": { "name": "二采使用 LoRA" }
+    }, "outputs": { "0": { "name": "H3 模型组合" } }
+  },
+  "FeiHouEasyH3RH": {
+    "display_name": "ComfyUI-FeiHou-Easy-H3-RH",
+    "inputs": {
+      "h3_bundle": { "name": "H3 模型组合" }, "mode": { "name": "模式", "options": { "image": "图生或首尾帧", "reference": "参考生视频" } },
+      "prompt": { "name": "提示词" }, "resolution": { "name": "分辨率" }, "aspect_ratio": { "name": "宽高比" }, "width": { "name": "宽度" }, "height": { "name": "高度" }, "seconds": { "name": "秒数" }, "advanced": { "name": "高级选项" }, "force_offload": { "name": "强制卸载" }, "fps": { "name": "帧率（FPS）" },
+      "keyframe_role": { "name": "首尾帧设置", "options": { "first": "首帧优先", "last": "尾帧优先" } },
+      "ref_image_size": { "name": "参考图尺寸（短边）" }, "reference_mention_mode": { "name": "@引用方式", "options": { "filename": "按文件名", "index": "按序号" } },
+      "prompt_optimizer_enabled": { "name": "提示词优化" }, "prompt_optimizer_api_format": { "name": "API 格式（自动识别）" }, "prompt_optimizer_api_url": { "name": "API 地址" }, "prompt_optimizer_api_key": { "name": "API 密钥" }, "prompt_optimizer_model": { "name": "模型名" }, "prompt_optimizer_scene_guide": { "name": "提示词方案" }
+    }, "outputs": { "0": { "name": "模型" }, "1": { "name": "二次采样模型" }, "2": { "name": "H3 Context" } }
+  },
+  "FeiHouEasyH3RHOutput": { "display_name": "FeiHou Easy H3 输出 · RH", "inputs": { "h3_context": { "name": "H3 Context" } }, "outputs": { "0": { "name": "正面条件" }, "1": { "name": "潜空间" }, "2": { "name": "视频 VAE" }, "3": { "name": "音频 VAE" }, "4": { "name": "FPS" }, "5": { "name": "提示词反推输出" } } },
+  "FeiHouEasyH3RHPromptPreview": { "display_name": "FeiHou Easy H3 提示词预览 · RH", "inputs": { "text": { "name": "提示词反推输出" } }, "outputs": { "0": { "name": "文本" } } }
+}

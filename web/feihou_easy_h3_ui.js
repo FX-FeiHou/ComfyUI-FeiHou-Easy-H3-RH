@@ -10,6 +10,7 @@ const OUTPUT_CLASS = "FeiHouEasyH3RHOutput";
 const PROMPT_PREVIEW_CLASS = "FeiHouEasyH3RHPromptPreview";
 const LINKS_PROP = "minimax_h3_virtual_media_links";
 const EMBEDDED_MEDIA_PROP = "feihou_h3_embedded_media";
+const EMBEDDED_MEDIA_JSON_WIDGET = "embedded_media_json";
 const PROMPT_DOC_PROP = "minimax_h3_prompt_reference_doc";
 const PROMPT_VIEW_PROP = "minimax_h3_prompt_view_mode";
 const RUNTIME_REF_PREFIX = "__MINIMAX_H3_REF_";
@@ -41,8 +42,12 @@ const PROMPT_HISTORY_LIMIT = 120;
 const PROMPT_UNDO_VERSION = "2026-08-05-editor-undo-shield-v1";
 const CARET_SENTINEL = "\u200B";
 const AUDIO_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='0.5' y='10' width='3' height='4' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='5.5' y='7' width='3' height='10' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='10.5' y='4' width='3' height='16' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='15.5' y='7' width='3' height='10' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='20.5' y='10' width='3' height='4' rx='1.5' fill='%2300e2bb'/%3E%3C/svg%3E";
-const PRIMARY_BROWSER_LANGUAGE = String(globalThis.navigator?.language || globalThis.navigator?.languages?.[0] || "");
+function currentComfyLocale() {
+    return String(app.ui?.settings?.getSettingValue?.("Comfy.Locale") || globalThis.navigator?.language || globalThis.navigator?.languages?.[0] || "en");
+}
+const PRIMARY_BROWSER_LANGUAGE = currentComfyLocale();
 const ZH_BROWSER = /^(zh)(?:[-_]|$)/i.test(PRIMARY_BROWSER_LANGUAGE);
+const t = (zh, en) => (ZH_BROWSER ? zh : en);
 const TEXT = {
     image: ZH_BROWSER ? "\u56fe\u7247" : "Image",
     video: ZH_BROWSER ? "\u89c6\u9891" : "Video",
@@ -92,6 +97,7 @@ const TEXT = {
     height: ZH_BROWSER ? "\u9ad8\u5ea6" : "Height",
     seconds: ZH_BROWSER ? "\u79d2\u6570" : "Seconds",
     advanced: ZH_BROWSER ? "\u9ad8\u7ea7\u9009\u9879" : "Advanced options",
+    forceOffload: ZH_BROWSER ? "\u5f3a\u5236\u5378\u8f7d" : "Force offload",
     promptOptimizerEnabled: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u4f18\u5316\u8bbe\u7f6e" : "Prompt optimization settings",
     promptOptimizerApiFormat: ZH_BROWSER ? "API 格式（自动识别）" : "API format (auto-detect)",
     promptOptimizerApiUrl: ZH_BROWSER ? "API \u5730\u5740" : "API URL",
@@ -110,8 +116,14 @@ const TEXT = {
     textEncoder: ZH_BROWSER ? "\u6587\u672c\u7f16\u7801\u5668" : "Text encoder",
     videoVae: ZH_BROWSER ? "\u89c6\u9891 VAE" : "Video VAE",
     audioVae: ZH_BROWSER ? "\u97f3\u9891 VAE" : "Audio VAE",
+    customSecondSampling: ZH_BROWSER ? "\u81ea\u5b9a\u4e49\u4e8c\u91c7\u6a21\u578b" : "Custom second-pass models",
+    secondFl2vaModel: ZH_BROWSER ? "\u4e8c\u91c7 FL2VA \u6a21\u578b" : "Second-pass FL2VA model",
+    secondRef2vaModel: ZH_BROWSER ? "\u4e8c\u91c7 REF2VA \u6a21\u578b" : "Second-pass REF2VA model",
+    secondSamplingUseLora: ZH_BROWSER ? "\u4e8c\u91c7\u4f7f\u7528 LoRA" : "Use LoRA for second pass",
+    loraStack: ZH_BROWSER ? "LoRA \u5806\u6808" : "LoRA stack",
     noneModel: ZH_BROWSER ? "\u65e0" : "None",
     outputModel: "Model",
+    outputSecondSamplingModel: ZH_BROWSER ? "\u4e8c\u6b21\u91c7\u6837\u6a21\u578b" : "Second sampling model",
     outputConditioning: "Conditioning",
     outputLatent: "Latent",
     outputVideoVae: "Video VAE",
@@ -125,7 +137,6 @@ const TEXT = {
     embeddedVideos: ZH_BROWSER ? "\u53c2\u8003\u89c6\u9891 \u00b7 3" : "Reference videos \u00b7 3",
     embeddedAudios: ZH_BROWSER ? "\u53c2\u8003\u97f3\u9891 \u00b7 3" : "Reference audio \u00b7 3",
     embeddedPick: ZH_BROWSER ? "\u70b9\u51fb\u6216\u62d6\u5165\u6587\u4ef6" : "Click or drop a file",
-    embeddedReorder: ZH_BROWSER ? "\u6309\u4f4f\u5e76\u62d6\u52a8\u4ee5\u8c03\u6574\u987a\u5e8f" : "Drag to reorder",
     embeddedDisabled: ZH_BROWSER ? "\u56fe\u751f\u89c6\u9891\u6a21\u5f0f\u4ec5\u4f7f\u7528\u524d 2 \u5f20\u56fe" : "Image mode uses the first 2 images",
     embeddedUploading: ZH_BROWSER ? "\u4e0a\u4f20\u4e2d\u2026" : "Uploading\u2026",
 };
@@ -382,10 +393,10 @@ function localizeNodeInstance(node) {
     if (!node) return;
     if (isLoader(node)) {
         node.title = TEXT.loaderTitle;
-        const labels = { lora_stack: "LoRA \u5806\u6808", fl2va_model: TEXT.fl2vaModel, ref2va_model: TEXT.ref2vaModel, text_encoder: TEXT.textEncoder, video_vae: TEXT.videoVae, audio_vae: TEXT.audioVae };
+        const labels = { lora_stack: TEXT.loraStack, fl2va_model: TEXT.fl2vaModel, ref2va_model: TEXT.ref2vaModel, text_encoder: TEXT.textEncoder, video_vae: TEXT.videoVae, audio_vae: TEXT.audioVae, custom_second_sampling_models: TEXT.customSecondSampling, second_fl2va_model: TEXT.secondFl2vaModel, second_ref2va_model: TEXT.secondRef2vaModel, second_sampling_use_lora: TEXT.secondSamplingUseLora };
         for (const widget of node.widgets || []) {
             if (labels[widget.name]) widget.label = labels[widget.name];
-            if (widget.name === "fl2va_model" || widget.name === "ref2va_model") localizeOptionalModelWidget(widget);
+            if (["fl2va_model", "ref2va_model", "second_fl2va_model", "second_ref2va_model"].includes(widget.name)) localizeOptionalModelWidget(widget);
         }
         for (const input of node.inputs || []) if (labels[input.name]) setLocalizedSlotLabel(input, labels[input.name]);
         return;
@@ -411,7 +422,7 @@ function localizeNodeInstance(node) {
     }
     if (!isTarget(node)) return;
     node.title = TEXT.mainTitle;
-    const labels = { mode: TEXT.mode, prompt: TEXT.prompt, resolution: TEXT.resolution, aspect_ratio: TEXT.aspectRatio, width: TEXT.width, height: TEXT.height, seconds: TEXT.seconds, advanced: TEXT.advanced, prompt_optimizer_enabled: TEXT.promptOptimizerEnabled, prompt_optimizer_api_format: TEXT.promptOptimizerApiFormat, prompt_optimizer_api_url: TEXT.promptOptimizerApiUrl, prompt_optimizer_api_key: TEXT.promptOptimizerApiKey, prompt_optimizer_model: TEXT.promptOptimizerModel, prompt_optimizer_scene_guide: TEXT.promptOptimizerSceneGuide, fps: TEXT.fps, keyframe_role: TEXT.keyframeRole, ref_image_size: TEXT.refImageSize, reference_mention_mode: TEXT.referenceMentionMode };
+    const labels = { mode: TEXT.mode, prompt: TEXT.prompt, resolution: TEXT.resolution, aspect_ratio: TEXT.aspectRatio, width: TEXT.width, height: TEXT.height, seconds: TEXT.seconds, advanced: TEXT.advanced, force_offload: TEXT.forceOffload, prompt_optimizer_enabled: TEXT.promptOptimizerEnabled, prompt_optimizer_api_format: TEXT.promptOptimizerApiFormat, prompt_optimizer_api_url: TEXT.promptOptimizerApiUrl, prompt_optimizer_api_key: TEXT.promptOptimizerApiKey, prompt_optimizer_model: TEXT.promptOptimizerModel, prompt_optimizer_scene_guide: TEXT.promptOptimizerSceneGuide, fps: TEXT.fps, keyframe_role: TEXT.keyframeRole, ref_image_size: TEXT.refImageSize, reference_mention_mode: TEXT.referenceMentionMode };
     for (const widget of node.widgets || []) {
         if (labels[widget.name]) widget.label = labels[widget.name];
         localizeComboWidget(widget);
@@ -420,7 +431,7 @@ function localizeNodeInstance(node) {
         if (input.name === "h3_bundle") setLocalizedSlotLabel(input, TEXT.bundle);
         if (input.name === "media") setLocalizedSlotLabel(input, TEXT.inputMedia);
     }
-    const outputLabels = { model: TEXT.outputModel, h3_context: TEXT.outputContext };
+    const outputLabels = { model: TEXT.outputModel, second_sampling_model: TEXT.outputSecondSamplingModel, h3_context: TEXT.outputContext };
     for (const output of node.outputs || []) {
         const key = String(output.name || "").toLowerCase();
         if (outputLabels[key]) setLocalizedSlotLabel(output, outputLabels[key]);
@@ -478,12 +489,27 @@ function referenceMentionMode(node) {
 
 const EMBEDDED_MEDIA_LIMITS = Object.freeze({ image: 9, video: 3, audio: 3 });
 const EMBEDDED_MEDIA_ORDER = Object.freeze({ image: 0, video: 1, audio: 2 });
+const EMBEDDED_MEDIA_LAYOUT = Object.freeze({
+    imageSlotBase: 72,
+    // Request only the height that was added to the node. This lets ComfyUI
+    // distribute gallery and prompt space without visual overlap.
+    previewGrowthRate: 1,
+    imageSlotMin: 48,
+    imageSlotMax: 128,
+    videoToImageRatio: 68 / 72,
+    promptBase: 96,
+    promptMin: 50,
+    galleryPromptGap: 8,
+    // Keep the gallery-to-prompt gap identical to ordinary ComfyUI widget rows.
+    widgetRowOffset: 4,
+    imageModeChrome: 32,
+    referenceModeChrome: 142,
+});
 const EMBEDDED_MEDIA_ACCEPT = Object.freeze({
     image: "image/png,image/jpeg,image/webp,image/gif,image/bmp",
     video: "video/mp4,video/webm,video/quicktime,video/x-matroska,video/x-msvideo",
     audio: "audio/*,video/mp4,video/webm,video/quicktime",
 });
-const EMBEDDED_MEDIA_REORDER_MIME = "application/x-feihou-h3-media-reorder";
 
 function embeddedMediaKey(mediaType, ordinal) {
     return `${String(mediaType)}_${Number(ordinal)}`;
@@ -523,7 +549,73 @@ function ensureEmbeddedMedia(node) {
         || left.ordinal - right.ordinal
     ));
     node.properties[EMBEDDED_MEDIA_PROP] = normalized;
+    syncEmbeddedMediaJsonWidget(node);
     return normalized;
+}
+
+function parseEmbeddedMediaJson(value) {
+    if (Array.isArray(value)) return value;
+    const text = String(value || "").trim();
+    if (!text) return [];
+    try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch {
+        return [];
+    }
+}
+
+function syncEmbeddedMediaJsonWidget(node) {
+    const widget = getWidget(node, EMBEDDED_MEDIA_JSON_WIDGET);
+    if (!widget) return "";
+    const payload = JSON.stringify(Array.isArray(node?.properties?.[EMBEDDED_MEDIA_PROP])
+        ? node.properties[EMBEDDED_MEDIA_PROP]
+        : []);
+    widget.value = payload;
+    if (widget._state) widget._state.value = payload;
+    return payload;
+}
+
+function hideSerializedTransportWidgets(node) {
+    for (const widget of node?.widgets || []) {
+        if (String(widget?.name || "") !== EMBEDDED_MEDIA_JSON_WIDGET) continue;
+        widget.hidden = true;
+        widget.type = "hidden";
+        setWidgetOption(widget, "hidden", true);
+        widget.serialize = true;
+        setWidgetOption(widget, "serialize", true);
+        widget.computeSize = () => [0, -4];
+    }
+}
+
+function applyEmbeddedMediaFromSerialized(node, info) {
+    if (ensureEmbeddedMedia(node).length) return;
+    const values = info?.widgets_values;
+    let records = [];
+    if (values && !Array.isArray(values) && typeof values === "object") {
+        records = parseEmbeddedMediaJson(values[EMBEDDED_MEDIA_JSON_WIDGET] || values[EMBEDDED_MEDIA_PROP]);
+        if (!records.length) {
+            for (let index = 1; index <= MAX_MEDIA; index += 1) {
+                const filename = String(values[`media_${index}`] || "").trim();
+                const mediaType = String(values[`media_type_${index}`] || "").trim().toLowerCase();
+                if (!filename) continue;
+                records.push({
+                    media_type: Object.hasOwn(EMBEDDED_MEDIA_LIMITS, mediaType) ? mediaType : "image",
+                    ordinal: records.filter((item) => item.media_type === (Object.hasOwn(EMBEDDED_MEDIA_LIMITS, mediaType) ? mediaType : "image")).length + 1,
+                    filename,
+                    subfolder: "",
+                    storage: "input",
+                });
+            }
+        }
+    } else if (Array.isArray(values)) {
+        const jsonValue = values.find((item) => typeof item === "string" && item.trim().startsWith("[") && item.includes("filename"));
+        records = parseEmbeddedMediaJson(jsonValue);
+    }
+    if (!records.length) return;
+    node.properties ||= {};
+    node.properties[EMBEDDED_MEDIA_PROP] = records;
+    ensureEmbeddedMedia(node);
 }
 
 function embeddedMediaRecords(node, { activeOnly = true } = {}) {
@@ -570,48 +662,6 @@ function setEmbeddedMedia(node, mediaType, ordinal, value) {
     requestMentionPreviewRefresh();
     node.setDirtyCanvas?.(true, true);
     app.graph?.change?.();
-}
-
-function embeddedMediaDragPayload(event) {
-    const raw = event.dataTransfer?.getData?.(EMBEDDED_MEDIA_REORDER_MIME);
-    if (!raw) return null;
-    try {
-        const value = JSON.parse(raw);
-        const mediaType = String(value?.media_type || "").toLowerCase();
-        const ordinal = Number(value?.ordinal);
-        if (!Object.hasOwn(EMBEDDED_MEDIA_LIMITS, mediaType) || !Number.isInteger(ordinal)) return null;
-        return { node_id: String(value?.node_id ?? ""), media_type: mediaType, ordinal };
-    } catch {
-        return null;
-    }
-}
-
-function reorderEmbeddedMedia(node, mediaType, sourceOrdinal, targetOrdinal) {
-    if (mediaType !== "image" && mediaType !== "video" && mediaType !== "audio") return false;
-    if (sourceOrdinal === targetOrdinal) return false;
-    const allRecords = ensureEmbeddedMedia(node);
-    const typedRecords = allRecords.filter((item) => item.media_type === mediaType);
-    const sourceIndex = typedRecords.findIndex((item) => item.ordinal === sourceOrdinal);
-    if (sourceIndex < 0) return false;
-    const targetIndex = typedRecords.findIndex((item) => item.ordinal === targetOrdinal);
-    const insertAt = targetIndex >= 0
-        ? targetIndex
-        : typedRecords.filter((item) => item.ordinal < targetOrdinal).length;
-    const reordered = [...typedRecords];
-    const [moved] = reordered.splice(sourceIndex, 1);
-    reordered.splice(Math.min(insertAt, reordered.length), 0, moved);
-    const otherRecords = allRecords.filter((item) => item.media_type !== mediaType);
-    node.properties[EMBEDDED_MEDIA_PROP] = [
-        ...otherRecords,
-        ...reordered.map((item, index) => ({ ...item, ordinal: index + 1 })),
-    ];
-    ensureEmbeddedMedia(node);
-    renderEmbeddedMediaGallery(node);
-    renderEditorFromNode(node);
-    requestMentionPreviewRefresh();
-    node.setDirtyCanvas?.(true, true);
-    app.graph?.change?.();
-    return true;
 }
 
 function ensureLinks(node) {
@@ -1654,6 +1704,7 @@ function patchGraphToPrompt() {
                 const originSlot = promptLink?.origin_slot ?? promptLink?.originSlot ?? 0;
                 if (originId != null) promptNode.inputs.prompt = [String(originId), Number(originSlot) || 0];
             }
+            promptNode.inputs.embedded_media_json = JSON.stringify(ensureEmbeddedMedia(node));
             promptNode.inputs.mode = canonicalOption("mode", getWidgetValue(node, "mode", MODE_IMAGE));
             promptNode.inputs.resolution = canonicalOption("resolution", getWidgetValue(node, "resolution", "480P"));
             promptNode.inputs.aspect_ratio = canonicalOption("aspect_ratio", getWidgetValue(node, "aspect_ratio", "16:9"));
@@ -1663,6 +1714,7 @@ function patchGraphToPrompt() {
             const advanced = asBoolean(getWidgetValue(node, "advanced", false));
             const optimizerEnabled = advanced && asBoolean(getWidgetValue(node, "prompt_optimizer_enabled", false));
             promptNode.inputs.advanced = advanced;
+            promptNode.inputs.force_offload = advanced && asBoolean(getWidgetValue(node, "force_offload", false));
             promptNode.inputs.prompt_optimizer_enabled = optimizerEnabled;
             promptNode.inputs.prompt_optimizer_api_format = canonicalOption("prompt_optimizer_api_format", getWidgetValue(node, "prompt_optimizer_api_format", "auto"));
             promptNode.inputs.prompt_optimizer_api_url = String(getWidgetValue(node, "prompt_optimizer_api_url", "") || "");
@@ -1676,6 +1728,10 @@ function patchGraphToPrompt() {
                 node.__h3OptimizerLastResult
                 && currentPromptText === String(node.__h3OptimizerLastResult),
             );
+            const secondSamplingOutput = (node.outputs || []).find((item) => String(item?.name || "") === "second_sampling_model");
+            promptNode.inputs.second_sampling_output_connected = Array.isArray(secondSamplingOutput?.links)
+                ? secondSamplingOutput.links.length > 0
+                : secondSamplingOutput?.links != null;
             promptNode.inputs.fps = Number(getWidgetValue(node, "fps", 24));
             promptNode.inputs.keyframe_role = canonicalOption("keyframe_role", getWidgetValue(node, "keyframe_role", KEYFRAME_FIRST));
             promptNode.inputs.ref_image_size = canonicalOption("ref_image_size", getWidgetValue(node, "ref_image_size", REF_IMAGE_DEFAULT));
@@ -3396,6 +3452,7 @@ function syncModeWidgets(node, { adjustHeight = true } = {}) {
         setConditionalWidgetVisible(node, getWidget(node, "keyframe_role"), advanced && !isReferenceMode(node), { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "ref_image_size"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "reference_mention_mode"), advanced && isReferenceMode(node), { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "force_offload"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_enabled"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_format"), optimizerEnabled, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_url"), optimizerEnabled, { adjustHeight }),
@@ -3408,6 +3465,22 @@ function syncModeWidgets(node, { adjustHeight = true } = {}) {
     ].some(Boolean);
     if (changed) {
         refreshVueNodeWidgets(node);
+        node._widgetSlotsDirty = true;
+        node.setDirtyCanvas?.(true, true);
+        app.graph?.setDirtyCanvas?.(true, true);
+    }
+    return changed;
+}
+
+function syncLoaderWidgets(node, { adjustHeight = true } = {}) {
+    if (!isLoader(node)) return false;
+    const enabled = asBoolean(getWidgetValue(node, "custom_second_sampling_models", false));
+    const changed = [
+        setConditionalWidgetVisible(node, getWidget(node, "second_fl2va_model"), enabled, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "second_ref2va_model"), enabled, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "second_sampling_use_lora"), enabled, { adjustHeight }),
+    ].some(Boolean);
+    if (changed) {
         node._widgetSlotsDirty = true;
         node.setDirtyCanvas?.(true, true);
         app.graph?.setDirtyCanvas?.(true, true);
@@ -3785,14 +3858,11 @@ function syncEditorMode(node) {
     const widget = getWidget(node, "prompt");
     const editor = node.__h3Editor;
     const wrap = node.__h3EditorWrap;
-    const domWidget = node.__h3DomWidget;
-    if (!widget || !editor || !wrap || !domWidget) return;
+    if (!widget || !editor || !wrap) return;
     syncPromptExternalConnectionState(node);
     const reference = isReferenceMode(node);
     const raw = isRawPromptMode(node);
     hideOriginalPromptWidget(widget);
-    setWidgetOption(domWidget, "canvasOnly", false);
-    showDomEditorWidget(domWidget);
     editor.style.display = "block";
     wrap.style.display = "block";
     editor.dataset.placeholder = raw ? TEXT.rawPromptPlaceholder : reference ? TEXT.referencePromptPlaceholder : TEXT.promptPlaceholder;
@@ -4581,24 +4651,8 @@ function ensurePromptEditor(node) {
     renderEditorFromNode(node);
     syncPromptOptimizerButton(node);
     resetPromptHistory(node);
-    const domWidget = node.addDOMWidget("h3_prompt_mentions", "h3_prompt_mentions", wrap, {
-        getValue: () => String(getWidget(node, "prompt")?.value || ""),
-        setValue: (value) => {
-            const promptWidget = getWidget(node, "prompt");
-            if (promptWidget) promptWidget.value = String(value || "");
-            renderEditorFromNode(node);
-        },
-        margin: 10,
-        serialize: false,
-        getMinHeight: () => 50,
-        afterResize: () => {
-            applyNativeEditorTheme(wrap);
-            node._widgetSlotsDirty = true;
-            node.setDirtyCanvas?.(true, true);
-        },
-        onDraw: () => applyNativeEditorTheme(wrap),
-    });
-    if (!domWidget) {
+    const workbench = node.__feihouMediaWorkbench;
+    if (!workbench) {
         restoreOriginalPromptWidget(widget);
         wrap.remove();
         node.__h3Editor = null;
@@ -4608,20 +4662,12 @@ function ensurePromptEditor(node) {
         node.__h3PromptOptimizeButton = null;
         return;
     }
-    node.__h3DomWidget = domWidget;
-    domWidget.serialize = false;
-    setWidgetOption(domWidget, "serialize", false);
-    setWidgetOption(domWidget, "canvasOnly", false);
-    domWidget.__h3EditorType = domWidget.type;
-    domWidget.__h3EditorComputeSize = domWidget.computeSize;
-    const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
-    const promptIndex = node.widgets?.indexOf(widget) ?? -1;
-    if (domIndex >= 0 && promptIndex >= 0 && domIndex !== promptIndex + 1) {
-        node.widgets.splice(domIndex, 1);
-        const nextPromptIndex = node.widgets.indexOf(widget);
-        node.widgets.splice(nextPromptIndex + 1, 0, domWidget);
-    }
+    // Keep media and prompt under one DOM widget. ComfyUI otherwise allocates
+    // each host independently, which causes gaps and overlapping children.
+    workbench.append(wrap);
+    node.__h3DomWidget = null;
     syncEditorMode(node);
+    syncEmbeddedMediaResponsiveLayout(node, { resetBaseline: true });
     repairNodeLayout(node);
 }
 
@@ -4685,10 +4731,14 @@ function isTransportInputName(name) {
     return /^media$/i.test(String(name || ""))
         || /^media_[0-9]+$/i.test(String(name || ""))
         || /^media_type_[0-9]+$/i.test(String(name || ""))
-        || /^prompt_optimizer_applied$/i.test(String(name || ""));
+        || /^prompt_optimizer_applied$/i.test(String(name || ""))
+        || /^second_sampling_output_connected$/i.test(String(name || ""));
 }
 
 function removeInputSlot(node, index) {
+    // ComfyUI 1.43+: onNodeCreated runs before node.graph is set.
+    // removeInput/disconnectInput require a live LGraph and throw NullGraphError otherwise.
+    if (!node?.graph) return false;
     const input = node?.inputs?.[index];
     if (!input) return false;
     if (input.link != null) {
@@ -4732,7 +4782,9 @@ function pruneTransportInputs(nodeData) {
 function pruneTransportInputsFromNode(node, { requestLayout = true, force = false } = {}) {
     if (!node || (!force && !isTarget(node))) return false;
     let changed = false;
-    if (Array.isArray(node.inputs)) {
+    // Defer input-slot removal until the node is on a graph (onAdded / later).
+    // Widget cleanup below does not need graph and remains safe in onNodeCreated.
+    if (Array.isArray(node.inputs) && node.graph) {
         for (let index = node.inputs.length - 1; index >= 0; index -= 1) {
             const input = node.inputs[index];
             const name = String(input?.name || "");
@@ -4803,6 +4855,14 @@ function bindPromptOptimizerWidgetCallbacks(node) {
 }
 
 function repairConfiguredWidgetValues(node, info) {
+    if (info?.widgets_values && !Array.isArray(info.widgets_values) && typeof info.widgets_values === "object") {
+        for (const [name, value] of Object.entries(info.widgets_values)) {
+            if (name === EMBEDDED_MEDIA_JSON_WIDGET || name === EMBEDDED_MEDIA_PROP) continue;
+            if (/^media(?:_type)?_[0-9]+$/i.test(name)) continue;
+            setConfiguredWidgetValue(node, name, value);
+        }
+        return;
+    }
     const raw = Array.isArray(info?.widgets_values) ? [...info.widgets_values] : [];
     if (!raw.length) return;
 
@@ -4825,6 +4885,7 @@ function repairConfiguredWidgetValues(node, info) {
         prompt_optimizer_api_key: "",
         prompt_optimizer_model: "",
         prompt_optimizer_scene_guide: "none",
+        force_offload: false,
     };
     const names = Object.keys(defaults);
     const values = raw;
@@ -4881,6 +4942,7 @@ function repairConfiguredWidgetValues(node, info) {
         prompt_optimizer_api_key: typeof values[15] === "string" ? values[15] : defaults.prompt_optimizer_api_key,
         prompt_optimizer_model: typeof values[16] === "string" ? values[16] : defaults.prompt_optimizer_model,
         prompt_optimizer_scene_guide: canonicalPromptGuide(values[17] ?? defaults.prompt_optimizer_scene_guide),
+        force_offload: asBoolean(values[18], defaults.force_offload),
     };
     for (const name of names) setConfiguredWidgetValue(node, name, normalized[name]);
     info.widgets_values = names.map((name) => normalized[name]);
@@ -4944,7 +5006,6 @@ function createEmbeddedMediaSlot(node, mediaType, ordinal) {
     cell.addEventListener("click", (event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (Date.now() < (cell.__h3SuppressClickUntil || 0)) return;
         if (cell.classList.contains("is-disabled") || cell.classList.contains("is-uploading")) return;
         chooseEmbeddedMediaFile(node, mediaType, ordinal);
     });
@@ -4954,44 +5015,18 @@ function createEmbeddedMediaSlot(node, mediaType, ordinal) {
         event.stopPropagation();
         chooseEmbeddedMediaFile(node, mediaType, ordinal);
     });
-    cell.addEventListener("dragstart", (event) => {
-        if (!cell.classList.contains("has-media") || cell.classList.contains("is-disabled")) {
-            event.preventDefault();
-            return;
-        }
-        cell.__h3SuppressClickUntil = Date.now() + 350;
-        event.dataTransfer.effectAllowed = "move";
-        event.dataTransfer.setData(EMBEDDED_MEDIA_REORDER_MIME, JSON.stringify({
-            node_id: String(node.id ?? ""), media_type: mediaType, ordinal,
-        }));
-        cell.classList.add("is-reordering");
-    });
-    cell.addEventListener("dragend", () => {
-        node.__feihouMediaGallery?.querySelectorAll?.(".is-reordering, .is-reorder-target, .is-dragover")
-            .forEach((element) => element.classList.remove("is-reordering", "is-reorder-target", "is-dragover"));
-    });
     cell.addEventListener("dragover", (event) => {
         if (cell.classList.contains("is-disabled")) return;
-        const payload = embeddedMediaDragPayload(event);
         event.preventDefault();
         event.stopPropagation();
-        if (payload) {
-            if (payload.node_id === String(node.id ?? "") && payload.media_type === mediaType && payload.ordinal !== ordinal) cell.classList.add("is-reorder-target");
-            return;
-        }
         cell.classList.add("is-dragover");
     });
-    cell.addEventListener("dragleave", () => cell.classList.remove("is-dragover", "is-reorder-target"));
+    cell.addEventListener("dragleave", () => cell.classList.remove("is-dragover"));
     cell.addEventListener("drop", (event) => {
-        cell.classList.remove("is-dragover", "is-reorder-target");
+        cell.classList.remove("is-dragover");
         if (cell.classList.contains("is-disabled")) return;
-        const payload = embeddedMediaDragPayload(event);
         event.preventDefault();
         event.stopPropagation();
-        if (payload) {
-            if (payload.node_id === String(node.id ?? "") && payload.media_type === mediaType) reorderEmbeddedMedia(node, mediaType, payload.ordinal, ordinal);
-            return;
-        }
         const file = event.dataTransfer?.files?.[0];
         if (file) uploadEmbeddedMediaFile(node, mediaType, ordinal, file);
     });
@@ -5013,6 +5048,67 @@ function createEmbeddedMediaSection(node, mediaType, count, title) {
     return section;
 }
 
+function embeddedGalleryHeight(reference, imageSlotHeight) {
+    const layout = EMBEDDED_MEDIA_LAYOUT;
+    const imageHeight = Math.round(Number(imageSlotHeight) || layout.imageSlotBase);
+    if (!reference) return imageHeight * 3 + layout.imageModeChrome + layout.widgetRowOffset;
+    return imageHeight * 3 + Math.round(imageHeight * layout.videoToImageRatio) + layout.referenceModeChrome + layout.widgetRowOffset;
+}
+
+function syncEmbeddedMediaResponsiveLayout(node, { resetBaseline = false } = {}) {
+    const gallery = node?.__feihouMediaGallery;
+    const workbench = node?.__feihouMediaWorkbench;
+    const galleryWidget = node?.__feihouMediaGalleryWidget;
+    const promptWrap = node?.__h3EditorWrap;
+    if (!gallery || !workbench || !galleryWidget || !promptWrap) return false;
+    const reference = isReferenceMode(node);
+    const layout = EMBEDDED_MEDIA_LAYOUT;
+    const modeKey = reference ? "reference" : "image";
+    const minGalleryHeight = embeddedGalleryHeight(reference, layout.imageSlotMin);
+    const hostMinHeight = minGalleryHeight + layout.promptMin + layout.galleryPromptGap;
+    const nodeHeight = Number(node?.size?.[1]);
+    let state = node.__h3EmbeddedResponsiveLayout;
+    if (resetBaseline || !state || state.mode !== modeKey) {
+        state = {
+            mode: modeKey,
+            nodeHeight: Number.isFinite(nodeHeight) && nodeHeight > 0 ? nodeHeight : 0,
+            hostHeight: Math.max(hostMinHeight, Number(galleryWidget.computedHeight) || hostMinHeight),
+        };
+        node.__h3EmbeddedResponsiveLayout = state;
+    }
+    // ComfyUI's computedHeight is the actual post-layout height of the one
+    // workbench host; native rows are not part of that value's node delta.
+    const allocatedHeight = Number(galleryWidget.computedHeight);
+    const delta = Number.isFinite(nodeHeight) && nodeHeight > 0 ? nodeHeight - state.nodeHeight : 0;
+    const hostHeight = Math.max(
+        hostMinHeight,
+        Number.isFinite(allocatedHeight) && allocatedHeight > 0
+            ? allocatedHeight
+            : state.hostHeight + delta,
+    );
+    const minimumScale = layout.imageSlotMin / layout.imageSlotBase;
+    const maximumScale = layout.imageSlotMax / layout.imageSlotBase;
+    const galleryVariableHeight = (reference ? 3 + layout.videoToImageRatio : 3) * layout.imageSlotBase;
+    const galleryChromeHeight = reference ? layout.referenceModeChrome : layout.imageModeChrome;
+    const rawScale = (hostHeight - layout.galleryPromptGap - galleryChromeHeight) / (galleryVariableHeight + layout.promptBase);
+    const proportionalScale = Math.max(minimumScale, Math.min(maximumScale, rawScale));
+    const imageSlotHeight = layout.imageSlotBase * proportionalScale;
+    const galleryHeight = embeddedGalleryHeight(reference, imageSlotHeight);
+    const previewAtMax = proportionalScale >= maximumScale;
+    const promptHeight = previewAtMax
+        ? Math.max(layout.promptMin, hostHeight - galleryHeight - layout.galleryPromptGap)
+        : Math.max(layout.promptMin, layout.promptBase * proportionalScale);
+    gallery.style.setProperty("--fh-h3-image-slot-height", `${Math.round(imageSlotHeight)}px`);
+    gallery.style.setProperty("--fh-h3-video-slot-height", `${Math.round(imageSlotHeight * layout.videoToImageRatio)}px`);
+    workbench.style.setProperty("--fh-h3-gallery-height", `${Math.round(galleryHeight)}px`);
+    workbench.style.setProperty("--fh-h3-prompt-height", `${Math.round(promptHeight)}px`);
+    workbench.classList.toggle("is-preview-capped", previewAtMax);
+    node.__h3EmbeddedPreviewAtMax = previewAtMax;
+    node.__h3EmbeddedResponsiveMetrics = { galleryHeight, promptHeight, hostHeight };
+    node._widgetSlotsDirty = true;
+    return true;
+}
+
 function renderEmbeddedMediaGallery(node) {
     const gallery = node?.__feihouMediaGallery;
     if (!gallery) return;
@@ -5031,8 +5127,6 @@ function renderEmbeddedMediaGallery(node) {
             const record = records.find((item) => item.media_type === mediaType && item.ordinal === ordinal);
             cell.classList.toggle("is-disabled", disabled);
             cell.classList.toggle("has-media", Boolean(record));
-            cell.draggable = Boolean(record) && !disabled;
-            cell.title = record && !disabled ? TEXT.embeddedReorder : "";
             cell.tabIndex = disabled ? -1 : 0;
             cell.setAttribute("aria-disabled", disabled ? "true" : "false");
             cell.replaceChildren();
@@ -5086,12 +5180,7 @@ function renderEmbeddedMediaGallery(node) {
             }
         }
     }
-    const galleryWidget = node.__feihouMediaGalleryWidget;
-    if (galleryWidget) {
-        const height = reference ? 460 : 275;
-        galleryWidget.computedHeight = height;
-        if (galleryWidget._state) galleryWidget._state.computedHeight = height;
-    }
+    syncEmbeddedMediaResponsiveLayout(node);
     node._widgetSlotsDirty = true;
     repairNodeLayout(node);
 }
@@ -5110,6 +5199,8 @@ function ensureEmbeddedMediaGallery(node) {
     if (node.__feihouMediaGallery || typeof document === "undefined" || typeof node.addDOMWidget !== "function") return;
     removeEmbeddedMediaGalleryWidgets(node);
     ensureEmbeddedMedia(node);
+    const workbench = document.createElement("div");
+    workbench.className = "fh-h3-embedded-workbench";
     const gallery = document.createElement("div");
     gallery.className = "fh-h3-media-gallery";
     gallery.addEventListener("pointerdown", (event) => event.stopPropagation());
@@ -5119,20 +5210,28 @@ function ensureEmbeddedMediaGallery(node) {
         createEmbeddedMediaSection(node, "video", 3, TEXT.embeddedVideos),
         createEmbeddedMediaSection(node, "audio", 3, TEXT.embeddedAudios),
     );
-    const domWidget = node.addDOMWidget("feihou_h3_embedded_media", "feihou_h3_embedded_media", gallery, {
+    workbench.append(gallery);
+    const domWidget = node.addDOMWidget("feihou_h3_embedded_media", "feihou_h3_embedded_media", workbench, {
         serialize: false,
-        margin: 10,
-        getMinHeight: () => isReferenceMode(node) ? 460 : 275,
-        afterResize: () => renderEmbeddedMediaGallery(node),
+        margin: 0,
+        getMinHeight: () => embeddedGalleryHeight(
+            isReferenceMode(node), EMBEDDED_MEDIA_LAYOUT.imageSlotMin,
+        ) + EMBEDDED_MEDIA_LAYOUT.promptMin + EMBEDDED_MEDIA_LAYOUT.galleryPromptGap,
+        afterResize: () => {
+            syncEmbeddedMediaResponsiveLayout(node);
+            applyNativeEditorTheme(node.__h3EditorWrap);
+            requestAnimationFrame?.(() => syncEmbeddedMediaResponsiveLayout(node));
+        },
     });
     if (!domWidget) {
-        gallery.remove();
+        workbench.remove();
         return;
     }
     domWidget.serialize = false;
     setWidgetOption(domWidget, "serialize", false);
     setWidgetOption(domWidget, "canvasOnly", false);
     node.__feihouMediaGallery = gallery;
+    node.__feihouMediaWorkbench = workbench;
     node.__feihouMediaGalleryWidget = domWidget;
     const domIndex = node.widgets?.indexOf(domWidget) ?? -1;
     const modeIndex = node.widgets?.indexOf(getWidget(node, "mode")) ?? -1;
@@ -5150,6 +5249,7 @@ function setupMainNodeFrontend(node) {
     delete node.properties[LINKS_PROP];
     ensureEmbeddedMedia(node);
     pruneTransportInputsFromNode(node, { force: true });
+    hideSerializedTransportWidgets(node);
     localizeNodeInstance(node);
     bindPromptOptimizerWidgetCallbacks(node);
     syncModeWidgets(node);
@@ -5245,6 +5345,7 @@ function installNode(nodeType, nodeData) {
         delete this.properties[LINKS_PROP];
         ensureEmbeddedMedia(this);
         pruneTransportInputsFromNode(this, { force: true });
+        hideSerializedTransportWidgets(this);
         localizeNodeInstance(this);
         bindPromptOptimizerWidgetCallbacks(this);
         ensureEmbeddedMediaGallery(this);
@@ -5280,8 +5381,10 @@ function installNode(nodeType, nodeData) {
         repairConfiguredWidgetValues(this, info);
         this.properties ||= {};
         delete this.properties[LINKS_PROP];
+        applyEmbeddedMediaFromSerialized(this, info);
         ensureEmbeddedMedia(this);
         pruneTransportInputsFromNode(this, { force: true });
+        hideSerializedTransportWidgets(this);
         localizeNodeInstance(this);
         bindPromptOptimizerWidgetCallbacks(this);
         ensureEmbeddedMediaGallery(this);
@@ -5298,6 +5401,13 @@ function installNode(nodeType, nodeData) {
         if (mediaInputIndex >= 0 && this.inputs?.[mediaInputIndex]?.link != null) {
             scheduleNativeMediaConnectionConversion(this, mediaInputIndex);
         }
+        return result;
+    };
+
+    const originalResize = nodeType.prototype.onResize;
+    nodeType.prototype.onResize = function onResizeH3Easy() {
+        const result = originalResize?.apply(this, arguments);
+        syncEmbeddedMediaResponsiveLayout(this);
         return result;
     };
 
@@ -5319,6 +5429,7 @@ function installNode(nodeType, nodeData) {
     const originalSerialize = nodeType.prototype.onSerialize;
     nodeType.prototype.onSerialize = function onSerializeH3Easy(info) {
         if (this.__h3Editor) syncPromptFromEditor(this, false);
+        syncEmbeddedMediaJsonWidget(this);
         const result = originalSerialize?.apply(this, arguments);
         if (info && this.properties?.[PROMPT_DOC_PROP]) {
             info.properties ||= {};
@@ -5362,6 +5473,7 @@ function installNode(nodeType, nodeData) {
         this.__h3PromptOptimizerStatusText = null;
         this.__feihouMediaGallery?.remove?.();
         this.__feihouMediaGallery = null;
+        this.__feihouMediaWorkbench = null;
         this.__feihouMediaGalleryWidget = null;
         removeEmbeddedMediaGalleryWidgets(this);
         removePromptEditorWidgets(this);
@@ -5378,12 +5490,23 @@ function installLoaderNode(nodeType, nodeData) {
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3Loader() {
         const result = originalCreated?.apply(this, arguments);
         localizeNodeInstance(this);
+        syncLoaderWidgets(this, { adjustHeight: false });
+        const toggle = getWidget(this, "custom_second_sampling_models");
+        if (toggle && !toggle.__h3SecondSamplingCallbackBound) {
+            toggle.__h3SecondSamplingCallbackBound = true;
+            const originalCallback = toggle.callback;
+            toggle.callback = (value) => {
+                originalCallback?.call(toggle, value);
+                syncLoaderWidgets(this);
+            };
+        }
         return result;
     };
     const originalConfigure = nodeType.prototype.onConfigure;
     nodeType.prototype.onConfigure = function onConfigureH3Loader(info) {
         const result = originalConfigure?.apply(this, arguments);
         localizeNodeInstance(this);
+        syncLoaderWidgets(this, { adjustHeight: false });
         return result;
     };
 }
@@ -5440,8 +5563,11 @@ function install() {
     }, true);
     const style = document.createElement("style");
     style.textContent = `
+      .fh-h3-embedded-workbench {
+        display: flex; flex-direction: column; gap: 8px; width: auto; height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0 10px; padding: 2px 0;
+      }
       .fh-h3-media-gallery {
-        display: grid; gap: 8px; width: 100%; height: 100%; min-width: 0; box-sizing: border-box; padding: 2px 0;
+        display: grid; gap: 8px; width: 100%; height: var(--fh-h3-gallery-height, auto); flex: 0 0 var(--fh-h3-gallery-height, auto); min-width: 0; box-sizing: border-box; margin: 0; padding: 0;
         color: var(--h3-native-widget-text, rgba(255,255,255,.88)); font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       .fh-h3-media-gallery.is-image-mode .fh-h3-media-section.is-video,
@@ -5451,21 +5577,18 @@ function install() {
         overflow: hidden; color: var(--h3-native-widget-muted, rgba(255,255,255,.54)); font-size: 10px; font-weight: 650;
         line-height: 16px; letter-spacing: .035em; text-transform: uppercase; text-overflow: ellipsis; white-space: nowrap;
       }
-      .fh-h3-media-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; min-width: 0; }
+      .fh-h3-media-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-auto-rows: max-content; align-content: start; gap: 4px; min-width: 0; }
       .fh-h3-media-slot {
-        appearance: none; position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; height: 72px; overflow: hidden;
+        appearance: none; position: relative; display: flex; align-items: center; justify-content: center; min-width: 0; height: var(--fh-h3-image-slot-height); overflow: hidden;
         box-sizing: border-box; padding: 0; border: 1px dashed var(--h3-native-widget-outline, rgba(255,255,255,.18)); border-radius: 7px;
         background: rgba(255,255,255,.035); color: var(--h3-native-widget-muted, rgba(255,255,255,.48)); cursor: pointer;
         transition: border-color .12s ease, background-color .12s ease, opacity .12s ease, transform .12s ease;
       }
-      .fh-h3-media-grid.is-video .fh-h3-media-slot { height: 68px; }
+      .fh-h3-media-grid.is-video .fh-h3-media-slot { height: var(--fh-h3-video-slot-height); }
       .fh-h3-media-grid.is-audio .fh-h3-media-slot { height: 54px; }
       .fh-h3-media-slot:hover, .fh-h3-media-slot:focus-visible, .fh-h3-media-slot.is-dragover {
         border-color: rgba(0,226,187,.64); background: rgba(0,226,187,.075); outline: none;
       }
-      .fh-h3-media-slot.has-media[draggable="true"] { cursor: grab; }
-      .fh-h3-media-slot.is-reordering { opacity: .45; cursor: grabbing; }
-      .fh-h3-media-slot.is-reorder-target { border-color: rgba(79,150,255,.95); background: rgba(79,150,255,.16); box-shadow: inset 0 0 0 1px rgba(79,150,255,.4); }
       .fh-h3-media-slot:active:not(.is-disabled) { transform: scale(.985); }
       .fh-h3-media-slot.has-media { border-style: solid; border-color: rgba(255,255,255,.18); background: rgba(0,0,0,.28); }
       .fh-h3-media-slot.is-disabled { opacity: .24; cursor: not-allowed; filter: grayscale(.8); }
@@ -5487,7 +5610,7 @@ function install() {
       }
       .fh-h3-media-slot-clear:hover, .fh-h3-media-slot-clear:focus-visible { background: rgba(212,70,70,.9); outline: none; }
       .h3-prompt-editor-wrap {
-        position: relative; display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; max-height: 100%;
+        position: relative; display: block; width: 100%; height: var(--fh-h3-prompt-height, 96px); flex: 0 0 var(--fh-h3-prompt-height, 96px); min-width: 0; min-height: 0; max-height: none; margin: 0;
         box-sizing: border-box; padding: 0; border-radius: var(--h3-native-widget-radius, 0); overflow: hidden; contain: size layout paint;
       }
       .h3-prompt-editor {
@@ -5652,6 +5775,17 @@ function install() {
 
 app.registerExtension({
     name: "FeiHouEasyH3RH",
+    // RH change --start--
+    rh: {
+        type: "nodes",
+        nodes: [
+            "FeiHouEasyH3RH",
+            "FeiHouEasyH3RHLoader",
+            "FeiHouEasyH3RHModelAdapter",
+            "FeiHouEasyH3RHOutput",
+        ],
+    },
+    // RH change --end--
     setup() {
         install();
     },
