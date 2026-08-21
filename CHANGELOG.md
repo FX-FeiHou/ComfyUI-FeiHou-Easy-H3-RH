@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## v1.3.8
 
 - Removes filename-based REF2VA rejection in reference-video first and second sampling. In RunningHub, renamed community and Remix weights are accepted according to the Loader slot selected by the user instead of requiring `ref2va` in the resource filename.
+- Adds the built-in **R2VA Enhanced** prompt guide directly below “General only”, using the supplied six-section full-reference prompt template for complex reference relationships.
+- With **Force offload** enabled, releases a cached second-pass transformer from the prior workflow execution before preparing the next first-pass model, avoiding unnecessary concurrent VRAM use.
 
 ## v1.3.7
 
