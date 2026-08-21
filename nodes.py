@@ -2211,9 +2211,10 @@ class MiniMaxH3Bundle:
     def _model_name_for(self, kind: str, *, allow_fallback: bool = False) -> str:
         """Return the transformer filename for this generation path.
 
-        Reference mode must use REF2VA weights. Silently serving FL2VA here
-        produces text-to-video that ignores gallery images and videos.
-        Image / first-last mode may fall back to REF2VA when FL2VA is absent.
+        The selected Loader slot expresses the intended role.  Do not infer a
+        role from the filename: RunningHub resource names and community Remix
+        weights are commonly renamed and may not contain ``ref2va`` or
+        ``fl2va``.
         """
         requested_kind = "ref2va" if kind == "ref2va" else "fl2va"
         preferred = self.ref2va_model_name if requested_kind == "ref2va" else self.fl2va_model_name
@@ -2269,6 +2270,40 @@ class MiniMaxH3Bundle:
         gc.collect()
         comfy.model_management.soft_empty_cache()
 
+    def release_residual_second_sampling_model(self) -> bool:
+        """Release a previous run's cached optional second-pass transformer.
+
+        RunningHub and ComfyUI can cache this Loader bundle across executions.
+        When Force offload is on, reclaim the old second-pass model before the
+        next first-pass model is prepared so both cannot occupy VRAM together.
+        """
+        with self._lock:
+            model = self._second_model
+            if model is None:
+                return False
+            self._second_model = None
+            self._second_model_kind = ""
+            self._second_model_name = ""
+            self._second_model_cache_key = None
+        for attribute in (
+            "_feihou_h3_unload_before_second_sampling",
+            "_feihou_h3_release_auxiliary_before_second_sampling",
+            "_feihou_h3_release_lora_cache_before_second_sampling",
+        ):
+            try:
+                delattr(model, attribute)
+            except AttributeError:
+                pass
+        try:
+            comfy.model_management.unload_model_and_clones(model, unload_additional_models=False)
+            _LOGGER.info("Easy H3: released residual second-pass transformer before the next generation")
+        except Exception as exc:
+            _LOGGER.warning("Easy H3: unable to release residual second-pass transformer: %s", exc)
+        finally:
+            gc.collect()
+            comfy.model_management.soft_empty_cache()
+        return True
+
     def model_for(self, kind: str):
         kind = "ref2va" if kind == "ref2va" else "fl2va"
         allow_fallback = kind != "ref2va"
@@ -2300,8 +2335,6 @@ class MiniMaxH3Bundle:
             self._model_kind = kind
             self._model_name = model_name
             self._model_cache_key = cache_key
-            if kind == "ref2va" and model_name and not _has_role(model_name, "ref2va"):
-                raise ValueError(f"参考生视频加载到了非 REF2VA 权重: {model_name}")
             _LOGGER.info("FeiHouEasyH3 loaded %s from %s", kind, model_name or "supplied MODEL object")
             return self._model
 
@@ -2333,8 +2366,6 @@ class MiniMaxH3Bundle:
                 self._second_model_kind = kind
                 self._second_model_name = model_name
                 self._second_model_cache_key = cache_key
-            if kind == "ref2va" and model_name and not _has_role(model_name, "ref2va"):
-                raise ValueError(f"参考生视频二采加载到了非 REF2VA 权重: {model_name}")
             first_model = self._model
             if first_model is not None and first_model is not model:
                 setattr(model, "_feihou_h3_unload_before_second_sampling", first_model)
@@ -2985,6 +3016,8 @@ class FeiHouEasyH3:
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
         h3_bundle.force_offload_enabled = _as_bool(force_offload)
+        if h3_bundle.force_offload_enabled:
+            h3_bundle.release_residual_second_sampling_model()
         second_sampling_connected = _as_bool(kwargs.get("second_sampling_output_connected", False))
         if embedded_media_json and "embedded_media_json" not in kwargs:
             kwargs["embedded_media_json"] = embedded_media_json

@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Removes filename-based REF2VA rejection in reference-video first and second sampling. In RunningHub, renamed community and Remix weights are accepted according to the Loader slot selected by the user instead of requiring `ref2va` in the resource filename.
+
 ## v1.3.7
 
 - Rebased the RH edition on RunningHub's current developer-compatible media workflow: embedded-media parameters, COS-backed media resolution, and RH resource model pickers are retained without desktop-only model-folder scanning.
