@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.9
+
+- Fixes prompt-guide titles to read ComfyUI's current locale at display time rather than locking in the language during frontend module initialization.
+- Adds the missing Chinese/English fallback label for **R2VA 加强版 / R2VA Enhanced**, so the guide remains correctly named while the backend scheme list is loading or when frontend cache is refreshed.
+
 ## v1.3.8
 
 - Removes filename-based REF2VA rejection in reference-video first and second sampling. In RunningHub, renamed community and Remix weights are accepted according to the Loader slot selected by the user instead of requiring `ref2va` in the resource filename.

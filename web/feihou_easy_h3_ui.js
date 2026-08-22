@@ -20,6 +20,7 @@ const PROMPT_VIEW_STRUCTURED = "structured";
 const PROMPT_VIEW_RAW = "raw";
 const PROMPT_GUIDES = [
     { value: "none", zh: "\u4ec5\u901a\u7528\u65b9\u6848", en: "General only" },
+    { value: "r2va_enhanced", zh: "R2VA \u52a0\u5f3a\u7248", en: "R2VA Enhanced" },
     { value: "3d_animation_short", zh: "3D \u52a8\u753b\u77ed\u7247", en: "3D Animation Short" },
     { value: "brand_promo", zh: "\u54c1\u724c\u5ba3\u4f20\u7247", en: "Brand Promo Video" },
     { value: "coop_game_intro", zh: "\u5408\u4f5c\u6e38\u620f\u5f00\u573a", en: "Co-op Game Intro" },
@@ -44,6 +45,9 @@ const CARET_SENTINEL = "\u200B";
 const AUDIO_ICON_SVG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='0.5' y='10' width='3' height='4' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='5.5' y='7' width='3' height='10' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='10.5' y='4' width='3' height='16' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='15.5' y='7' width='3' height='10' rx='1.5' fill='%2300e2bb'/%3E%3Crect x='20.5' y='10' width='3' height='4' rx='1.5' fill='%2300e2bb'/%3E%3C/svg%3E";
 function currentComfyLocale() {
     return String(app.ui?.settings?.getSettingValue?.("Comfy.Locale") || globalThis.navigator?.language || globalThis.navigator?.languages?.[0] || "en");
+}
+function isChineseComfyLocale() {
+    return /^(zh)(?:[-_]|$)/i.test(currentComfyLocale());
 }
 const PRIMARY_BROWSER_LANGUAGE = currentComfyLocale();
 const ZH_BROWSER = /^(zh)(?:[-_]|$)/i.test(PRIMARY_BROWSER_LANGUAGE);
@@ -346,9 +350,10 @@ function localizeComboWidget(widget) {
     const name = String(widget?.name || "");
     if (name === "prompt_optimizer_scene_guide") {
         const current = canonicalPromptGuide(widget?.value);
+        const isChinese = isChineseComfyLocale();
         widget.options ||= {};
-        widget.options.values = PROMPT_GUIDES.map((item) => ZH_BROWSER ? item.zh : item.en);
-        widget.value = PROMPT_GUIDES.find((item) => item.value === current)?.[ZH_BROWSER ? "zh" : "en"] || widget.value;
+        widget.options.values = PROMPT_GUIDES.map((item) => isChinese ? item.zh : item.en);
+        widget.value = PROMPT_GUIDES.find((item) => item.value === current)?.[isChinese ? "zh" : "en"] || widget.value;
         widget.__h3PromptGuideLocalized = true;
         return;
     }
@@ -4843,7 +4848,7 @@ function bindPromptOptimizerWidgetCallbacks(node) {
         const original = widget.callback;
         widget.callback = (value) => {
             original?.call(widget, value);
-            if (name === "prompt_optimizer_scene_guide") widget.value = ZH_BROWSER
+            if (name === "prompt_optimizer_scene_guide") widget.value = isChineseComfyLocale()
                 ? (PROMPT_GUIDES.find((item) => item.value === canonicalPromptGuide(value))?.zh || value)
                 : (PROMPT_GUIDES.find((item) => item.value === canonicalPromptGuide(value))?.en || value);
             syncModeWidgets(node);
