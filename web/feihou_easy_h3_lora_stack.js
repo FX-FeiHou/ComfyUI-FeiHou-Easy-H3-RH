@@ -330,9 +330,9 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         this.hitAreas = {
             toggle: {bounds: [0, 0], onDown: this.onToggleDown},
             lora: {bounds: [0, 0], onClick: this.onLoraClick},
-            strengthDec: {bounds: [0, 0], onClick: this.onStrengthDecDown},
+            strengthDec: {bounds: [0, 0], onDown: this.onStrengthDecDown},
             strengthVal: {bounds: [0, 0], onClick: this.onStrengthValUp},
-            strengthInc: {bounds: [0, 0], onClick: this.onStrengthIncDown},
+            strengthInc: {bounds: [0, 0], onDown: this.onStrengthIncDown},
             strengthAny: {bounds: [0, 0], onMove: this.onStrengthAnyMove},
         };
     }
@@ -374,7 +374,10 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         this.hitAreas.strengthDec.bounds = leftArrow;
         this.hitAreas.strengthVal.bounds = numberText;
         this.hitAreas.strengthInc.bounds = rightArrow;
-        this.hitAreas.strengthAny.bounds = [leftArrow[0], rightArrow[0] + rightArrow[1] - leftArrow[0]];
+        // Drag only on the numeric value.  This keeps the arrow buttons
+        // reliable on RH's canvas event bridge instead of treating a click on
+        // an arrow as a strength drag.
+        this.hitAreas.strengthAny.bounds = numberText;
         const loraWidth = leftArrow[0] - innerMargin - posX;
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
@@ -399,27 +402,39 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         this.cancelMouseDown();
     }
 
-    onStrengthDecDown() {
-        this.stepStrength(-1);
+    onStrengthDecDown(event, pos, node) {
+        this.stepStrength(-1, node);
+        return true;
     }
 
-    onStrengthIncDown() {
-        this.stepStrength(1);
+    onStrengthIncDown(event, pos, node) {
+        this.stepStrength(1, node);
+        return true;
     }
 
-    onStrengthAnyMove(event) {
+    onStrengthAnyMove(event, pos, node) {
         if (event.deltaX) {
             this.haveMouseMovedStrength = true;
-            this.value.strength += event.deltaX * 0.05;
+            this.setStrength(this.value.strength + event.deltaX * 0.05, node);
         }
     }
 
-    onStrengthValUp(event) {
+    onStrengthValUp(event, pos, node) {
         if (this.haveMouseMovedStrength) return;
-        app.canvas.prompt(t("强度", "Value"), this.value.strength, (value) => {
+        const apply = (value) => {
             const number = Number(value);
-            if (Number.isFinite(number)) this.value.strength = number;
-        }, event);
+            if (Number.isFinite(number)) this.setStrength(number, node);
+        };
+        // RunningHub's embedded canvas does not reliably open the legacy
+        // LiteGraph prompt. Use the browser numeric prompt there; the native
+        // field supports direct typing and keyboard arrow increments.
+        if (isRhPlatform()) {
+            const value = globalThis.prompt?.(t("输入 LoRA 强度", "Enter LoRA strength"), String(this.value.strength));
+            if (value !== null && value !== undefined) apply(value);
+            return true;
+        }
+        app.canvas.prompt(t("强度", "Value"), this.value.strength, apply, event);
+        return true;
     }
 
     onMouseUp(event, pos, node) {
@@ -427,9 +442,15 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         this.haveMouseMovedStrength = false;
     }
 
-    stepStrength(direction) {
-        const strength = this.value.strength + 0.05 * direction;
+    setStrength(value, node) {
+        const strength = Number(value);
+        if (!Number.isFinite(strength)) return;
         this.value.strength = Math.round(strength * 100) / 100;
+        node?.setDirtyCanvas?.(true, true);
+    }
+
+    stepStrength(direction, node) {
+        this.setStrength(this.value.strength + 0.05 * direction, node);
     }
 }
 

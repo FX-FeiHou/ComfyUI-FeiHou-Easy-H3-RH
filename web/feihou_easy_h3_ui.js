@@ -5569,7 +5569,7 @@ function install() {
     const style = document.createElement("style");
     style.textContent = `
       .fh-h3-embedded-workbench {
-        display: flex; flex-direction: column; gap: 8px; width: auto; height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0 10px; padding: 2px 0;
+        display: flex; flex-direction: column; gap: 8px; width: calc(100% - 20px); max-width: calc(100% - 20px); height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0 10px; padding: 2px 0; overflow: hidden;
       }
       .fh-h3-media-gallery {
         display: grid; gap: 8px; width: 100%; height: var(--fh-h3-gallery-height, auto); flex: 0 0 var(--fh-h3-gallery-height, auto); min-width: 0; box-sizing: border-box; margin: 0; padding: 0;

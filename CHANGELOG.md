@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.10
+
+- Accepts legacy/display API-format values such as **OpenAI Compatible**, **OpenAI 兼容**, **Gemini 原生**, and **自动识别** in saved RunningHub workflows. Ollama now reports an explicit RH-not-supported message.
+- Fixes the Loader text-encoder model list: the `text_encoders` category is now passed as a real one-item tuple, so all locally available encoder files are listed rather than only the fallback model.
+- Fixes embedded prompt-editor bounds so the editor cannot extend beyond the node or cover the first native option row.
+- Improves RH LoRA-strength editing: arrow controls respond immediately, number clicks accept direct input, and dragging remains available on the number area.
+
 ## v1.3.9
 
 - Fixes prompt-guide titles to read ComfyUI's current locale at display time rather than locking in the language during frontend module initialization.

@@ -1117,11 +1117,32 @@ def _resolve_node_optimizer_api_format(api_format: str, api_url: str) -> str:
     available for online gateways whose URL intentionally hides the upstream
     protocol.  RH intentionally does not support local Ollama endpoints.
     """
-    requested = str(api_format or "auto").strip().lower()
+    raw_value = str(api_format or "auto").strip()
+    requested = raw_value.lower()
+    # RH may restore the label shown by an older frontend rather than the
+    # canonical combo value.  Accept those display aliases so an existing
+    # workflow does not fail before it ever reaches the configured API.
+    compact = re.sub(r"[\s_\-（）()]+", "", requested)
+    aliases = {
+        "": "auto",
+        "auto": "auto",
+        "autodetect": "auto",
+        "自动": "auto",
+        "自动识别": "auto",
+        "openai": "openai",
+        "openaicompatible": "openai",
+        "openai兼容": "openai",
+        "gemini": "gemini",
+        "gemininative": "gemini",
+        "gemini原生": "gemini",
+    }
+    requested = aliases.get(compact, requested)
     if requested in {"openai", "gemini"}:
         return requested
+    if requested == "ollama":
+        raise ValueError("RunningHub 版不支持 Ollama，请选择自动识别、OpenAI 兼容或 Gemini 原生")
     if requested not in {"", "auto"}:
-        raise ValueError("不支持当前 API 格式")
+        raise ValueError(f"不支持当前 API 格式：{raw_value!r}（请选自动识别、OpenAI 兼容或 Gemini 原生）")
 
     address = str(api_url or "").strip().lower()
     parsed = urllib.parse.urlsplit(address if "://" in address else "https://" + address)
@@ -2122,7 +2143,7 @@ def _rh_unet_model_combo() -> tuple:
 
 
 def _clip_choices() -> list[str]:
-    return _all_weight_choices(("text_encoders"), "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
+    return _all_weight_choices(("text_encoders",), "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors")
 
 
 def _vae_choices(needles: tuple[str, ...], fallback: str) -> list[str]:
