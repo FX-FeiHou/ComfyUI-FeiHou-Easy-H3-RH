@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.11
+
+- Fixes native ComfyUI external-input support for the embedded Easy H3 UI. Connected widgets now preserve their graph links instead of being overwritten by panel defaults during workflow serialization.
+- The fix covers duration, resolution, aspect ratio, width/height, FPS, advanced settings, force offload, reference options, and prompt-optimizer controls. Embedded image/video/audio uploads and ordering are unchanged.
+
 ## v1.3.10
 
 - Accepts legacy/display API-format values such as **OpenAI Compatible**, **OpenAI 兼容**, **Gemini 原生**, and **自动识别** in saved RunningHub workflows. Ollama now reports an explicit RH-not-supported message.

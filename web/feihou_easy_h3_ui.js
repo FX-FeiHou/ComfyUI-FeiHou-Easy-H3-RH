@@ -1710,24 +1710,43 @@ function patchGraphToPrompt() {
                 if (originId != null) promptNode.inputs.prompt = [String(originId), Number(originSlot) || 0];
             }
             promptNode.inputs.embedded_media_json = JSON.stringify(ensureEmbeddedMedia(node));
-            promptNode.inputs.mode = canonicalOption("mode", getWidgetValue(node, "mode", MODE_IMAGE));
-            promptNode.inputs.resolution = canonicalOption("resolution", getWidgetValue(node, "resolution", "480P"));
-            promptNode.inputs.aspect_ratio = canonicalOption("aspect_ratio", getWidgetValue(node, "aspect_ratio", "16:9"));
-            promptNode.inputs.width = Number(getWidgetValue(node, "width", 1344));
-            promptNode.inputs.height = Number(getWidgetValue(node, "height", 768));
-            promptNode.inputs.seconds = Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, Number(getWidgetValue(node, "seconds", 10)) || 10));
+            // The embedded editor has to add its media values manually, but it
+            // must never replace normal ComfyUI widget-to-input connections.
+            // graphToPrompt has already serialized those links into `inputs`;
+            // only write a widget value when the corresponding input is not
+            // connected. This keeps external numeric/boolean/combo controls
+            // functional exactly like native ComfyUI nodes.
+            const setWidgetInput = (name, value) => {
+                const input = (node.inputs || []).find((item) => String(item?.name || "") === name);
+                const existing = promptNode.inputs[name];
+                if (Array.isArray(existing) && existing.length >= 2) return;
+                const rawLink = input?.link ?? (Array.isArray(input?.links) ? input.links[0] : null);
+                if (rawLink != null) {
+                    const link = getNativeGraphLink(node.graph || app.graph, rawLink);
+                    const originId = link?.origin_id ?? link?.originId;
+                    const originSlot = link?.origin_slot ?? link?.originSlot ?? 0;
+                    if (originId != null) {
+                        promptNode.inputs[name] = [String(originId), Number(originSlot) || 0];
+                        return;
+                    }
+                }
+                promptNode.inputs[name] = value;
+            };
+            setWidgetInput("mode", canonicalOption("mode", getWidgetValue(node, "mode", MODE_IMAGE)));
+            setWidgetInput("resolution", canonicalOption("resolution", getWidgetValue(node, "resolution", "480P")));
+            setWidgetInput("aspect_ratio", canonicalOption("aspect_ratio", getWidgetValue(node, "aspect_ratio", "16:9")));
+            setWidgetInput("width", Number(getWidgetValue(node, "width", 1344)));
+            setWidgetInput("height", Number(getWidgetValue(node, "height", 768)));
+            setWidgetInput("seconds", Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, Number(getWidgetValue(node, "seconds", 10)) || 10)));
             const advanced = asBoolean(getWidgetValue(node, "advanced", false));
-            const optimizerEnabled = advanced && asBoolean(getWidgetValue(node, "prompt_optimizer_enabled", false));
-            promptNode.inputs.advanced = advanced;
-            promptNode.inputs.force_offload = advanced && asBoolean(getWidgetValue(node, "force_offload", false));
-            promptNode.inputs.prompt_optimizer_enabled = optimizerEnabled;
-            promptNode.inputs.prompt_optimizer_api_format = canonicalOption("prompt_optimizer_api_format", getWidgetValue(node, "prompt_optimizer_api_format", "auto"));
-            promptNode.inputs.prompt_optimizer_api_url = String(getWidgetValue(node, "prompt_optimizer_api_url", "") || "");
-            promptNode.inputs.prompt_optimizer_api_key = String(getWidgetValue(node, "prompt_optimizer_api_key", "") || "");
-            promptNode.inputs.prompt_optimizer_model = String(getWidgetValue(node, "prompt_optimizer_model", "") || "");
-            promptNode.inputs.prompt_optimizer_scene_guide = optimizerEnabled
-                ? canonicalPromptGuide(getWidgetValue(node, "prompt_optimizer_scene_guide", "none"))
-                : "none";
+            setWidgetInput("advanced", advanced);
+            setWidgetInput("force_offload", asBoolean(getWidgetValue(node, "force_offload", false)));
+            setWidgetInput("prompt_optimizer_enabled", asBoolean(getWidgetValue(node, "prompt_optimizer_enabled", false)));
+            setWidgetInput("prompt_optimizer_api_format", canonicalOption("prompt_optimizer_api_format", getWidgetValue(node, "prompt_optimizer_api_format", "auto")));
+            setWidgetInput("prompt_optimizer_api_url", String(getWidgetValue(node, "prompt_optimizer_api_url", "") || ""));
+            setWidgetInput("prompt_optimizer_api_key", String(getWidgetValue(node, "prompt_optimizer_api_key", "") || ""));
+            setWidgetInput("prompt_optimizer_model", String(getWidgetValue(node, "prompt_optimizer_model", "") || ""));
+            setWidgetInput("prompt_optimizer_scene_guide", canonicalPromptGuide(getWidgetValue(node, "prompt_optimizer_scene_guide", "none")));
             const currentPromptText = String(getWidgetValue(node, "prompt", ""));
             promptNode.inputs.prompt_optimizer_applied = Boolean(
                 node.__h3OptimizerLastResult
@@ -1737,10 +1756,10 @@ function patchGraphToPrompt() {
             promptNode.inputs.second_sampling_output_connected = Array.isArray(secondSamplingOutput?.links)
                 ? secondSamplingOutput.links.length > 0
                 : secondSamplingOutput?.links != null;
-            promptNode.inputs.fps = Number(getWidgetValue(node, "fps", 24));
-            promptNode.inputs.keyframe_role = canonicalOption("keyframe_role", getWidgetValue(node, "keyframe_role", KEYFRAME_FIRST));
-            promptNode.inputs.ref_image_size = canonicalOption("ref_image_size", getWidgetValue(node, "ref_image_size", REF_IMAGE_DEFAULT));
-            promptNode.inputs.reference_mention_mode = canonicalOption("reference_mention_mode", getWidgetValue(node, "reference_mention_mode", "index"));
+            setWidgetInput("fps", Number(getWidgetValue(node, "fps", 24)));
+            setWidgetInput("keyframe_role", canonicalOption("keyframe_role", getWidgetValue(node, "keyframe_role", KEYFRAME_FIRST)));
+            setWidgetInput("ref_image_size", canonicalOption("ref_image_size", getWidgetValue(node, "ref_image_size", REF_IMAGE_DEFAULT)));
+            setWidgetInput("reference_mention_mode", canonicalOption("reference_mention_mode", getWidgetValue(node, "reference_mention_mode", "index")));
         }
         return promptData;
     };
