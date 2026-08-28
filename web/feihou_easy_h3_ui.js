@@ -35,6 +35,7 @@ const MODE_REFERENCE = "reference";
 const KEYFRAME_FIRST = "first";
 const RESOLUTION_CUSTOM = "custom";
 const REF_IMAGE_DEFAULT = "480";
+const REF_IMAGE_MATCH = "match";
 const REF_IMAGE_SHORT_EDGES = ["480", "544", "640", "736", "768", "832", "928", "1024", "1088"];
 const MAX_MEDIA = 15;
 const MIN_SECONDS = 0.2;
@@ -130,8 +131,10 @@ const TEXT = {
     outputSecondSamplingModel: ZH_BROWSER ? "\u4e8c\u6b21\u91c7\u6837\u6a21\u578b" : "Second sampling model",
     outputConditioning: "Conditioning",
     outputLatent: "Latent",
+    outputClip: "CLIP",
     outputVideoVae: "Video VAE",
     outputAudioVae: "Audio VAE",
+    outputAudio1: ZH_BROWSER ? "Audio 1 \u97f3\u9891" : "Audio 1",
     outputFps: "FPS",
     outputPromptPreview: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u53cd\u63a8\u8f93\u51fa" : "Prompt inference output",
     outputContext: "H3 Context",
@@ -140,6 +143,8 @@ const TEXT = {
     embeddedImages: ZH_BROWSER ? "\u53c2\u8003\u56fe\u7247 \u00b7 9" : "Reference images \u00b7 9",
     embeddedVideos: ZH_BROWSER ? "\u53c2\u8003\u89c6\u9891 \u00b7 3" : "Reference videos \u00b7 3",
     embeddedAudios: ZH_BROWSER ? "\u53c2\u8003\u97f3\u9891 \u00b7 3" : "Reference audio \u00b7 3",
+    audioTrim: ZH_BROWSER ? "\u65f6\u95f4\u622a\u53d6" : "Trim range",
+    audioTrimPlaceholder: "00:00:000",
     embeddedPick: ZH_BROWSER ? "\u70b9\u51fb\u6216\u62d6\u5165\u6587\u4ef6" : "Click or drop a file",
     embeddedDisabled: ZH_BROWSER ? "\u56fe\u751f\u89c6\u9891\u6a21\u5f0f\u4ec5\u4f7f\u7528\u524d 2 \u5f20\u56fe" : "Image mode uses the first 2 images",
     embeddedUploading: ZH_BROWSER ? "\u4e0a\u4f20\u4e2d\u2026" : "Uploading\u2026",
@@ -154,6 +159,7 @@ const OPTION_DEFS = {
         last: ZH_BROWSER ? "\u5c3e\u5e27\u4f18\u5148" : "Last frame priority",
     },
     ref_image_size: {
+        [REF_IMAGE_MATCH]: ZH_BROWSER ? "匹配生成分辨率" : "Match generation size",
         ...Object.fromEntries(REF_IMAGE_SHORT_EDGES.map((value) => [value, value])),
     },
     reference_mention_mode: {
@@ -217,9 +223,9 @@ const OPTION_ALIASES = {
             [`\u77ed\u8fb9 ${value}`, value],
             [`Short edge ${value}`, value],
         ])),
-        match: "480",
-        "\u5339\u914d\u751f\u6210\u5206\u8fa8\u7387": "480",
-        "Match generation size": "480",
+        match: REF_IMAGE_MATCH,
+        "\u5339\u914d\u751f\u6210\u5206\u8fa8\u7387": REF_IMAGE_MATCH,
+        "Match generation size": REF_IMAGE_MATCH,
         "1k": "1024",
         "1.5k": "1088",
         "2k": "1088",
@@ -418,7 +424,7 @@ function localizeNodeInstance(node) {
         for (const input of node.inputs || []) {
             if (input.name === "h3_context") setLocalizedSlotLabel(input, TEXT.outputContext);
         }
-        const outputLabels = { positive: TEXT.outputConditioning, latent: TEXT.outputLatent, video_vae: TEXT.outputVideoVae, audio_vae: TEXT.outputAudioVae, fps: TEXT.outputFps, prompt_preview: TEXT.outputPromptPreview };
+        const outputLabels = { positive: TEXT.outputConditioning, latent: TEXT.outputLatent, clip: TEXT.outputClip, video_vae: TEXT.outputVideoVae, audio_vae: TEXT.outputAudioVae, audio_1: TEXT.outputAudio1, fps: TEXT.outputFps, prompt_preview: TEXT.outputPromptPreview };
         for (const output of node.outputs || []) {
             const key = String(output.name || "").toLowerCase();
             if (outputLabels[key]) setLocalizedSlotLabel(output, outputLabels[key]);
@@ -508,13 +514,67 @@ const EMBEDDED_MEDIA_LAYOUT = Object.freeze({
     // Keep the gallery-to-prompt gap identical to ordinary ComfyUI widget rows.
     widgetRowOffset: 4,
     imageModeChrome: 32,
-    referenceModeChrome: 142,
+    referenceModeChrome: 170,
 });
 const EMBEDDED_MEDIA_ACCEPT = Object.freeze({
     image: "image/png,image/jpeg,image/webp,image/gif,image/bmp",
     video: "video/mp4,video/webm,video/quicktime,video/x-matroska,video/x-msvideo",
     audio: "audio/*,video/mp4,video/webm,video/quicktime",
 });
+const AUDIO_TRIM_DEFAULT = "00:00-00:00";
+
+function parseAudioTrimPart(value) {
+    let text = String(value ?? "").trim().replaceAll("\uff1a", ":").replaceAll("\uff0e", ".");
+    if (!text) return { seconds: 0, valid: true };
+    text = text.replace(/\s+/g, "");
+    if (!text.includes(":")) {
+        if (!/^\d+(?:\.\d+)?$/.test(text)) return { seconds: 0, valid: false };
+        return { seconds: Math.ceil(Number.parseFloat(text)), valid: true };
+    }
+    const parts = text.split(":");
+    if (!parts.length || parts.length > 4 || parts.some((part) => !/^\d+$/.test(part))) return { seconds: 0, valid: false };
+    const values = parts.map((part) => Number.parseInt(part, 10));
+    let seconds;
+    if (values.length === 2) {
+        seconds = values[0] * 60 + values[1];
+    } else {
+        const fractionIndex = values.length - 1;
+        const fraction = values[fractionIndex] * (10 ** (3 - Math.min(3, parts[fractionIndex].length))) / 1000;
+        seconds = values.length === 3
+            ? values[0] * 60 + values[1] + fraction
+            : values[0] * 3600 + values[1] * 60 + values[2] + fraction;
+        seconds = Math.ceil(seconds * 10 - 1e-9) / 10;
+    }
+    return { seconds, valid: true };
+}
+
+function formatAudioTrimPart(seconds) {
+    const totalTenths = Math.max(0, Math.round((Number(seconds) || 0) * 10));
+    const wholeSeconds = Math.floor(totalTenths / 10);
+    const hours = Math.floor(wholeSeconds / 3600);
+    const minutes = Math.floor((wholeSeconds % 3600) / 60);
+    const remainder = wholeSeconds % 60;
+    const milliseconds = (totalTenths % 10) * 100;
+    const pad = (value) => String(value).padStart(2, "0");
+    const millis = String(milliseconds).padStart(3, "0");
+    return hours > 0 ? `${pad(hours)}:${pad(minutes)}:${pad(remainder)}:${millis}` : `${pad(minutes)}:${pad(remainder)}:${millis}`;
+}
+
+function normalizeAudioTrimRange(value) {
+    const text = String(value ?? "").trim();
+    if (!text) return AUDIO_TRIM_DEFAULT;
+    const parts = text.split(/\s*(?:-|~|\u2013|\u2014|\u81f3|to)\s*/i, 2);
+    if (parts.length === 1) {
+        const end = parseAudioTrimPart(parts[0]);
+        return end.valid ? `00:00-${formatAudioTrimPart(end.seconds)}` : AUDIO_TRIM_DEFAULT;
+    }
+    const start = parseAudioTrimPart(parts[0]);
+    const end = parseAudioTrimPart(parts[1]);
+    if (!start.valid || !end.valid) return AUDIO_TRIM_DEFAULT;
+    const startSeconds = end.seconds > 0 && end.seconds < start.seconds ? end.seconds : start.seconds;
+    const endSeconds = end.seconds > 0 && end.seconds < start.seconds ? start.seconds : end.seconds;
+    return `${formatAudioTrimPart(startSeconds)}-${formatAudioTrimPart(endSeconds)}`;
+}
 
 function embeddedMediaKey(mediaType, ordinal) {
     return `${String(mediaType)}_${Number(ordinal)}`;
@@ -547,6 +607,7 @@ function ensureEmbeddedMedia(node) {
             filename,
             subfolder: String(item?.subfolder || ""),
             storage: String(item?.storage || item?.type_name || "input"),
+            audio_trim: mediaType === "audio" ? normalizeAudioTrimRange(item?.audio_trim || item?.trim_range || AUDIO_TRIM_DEFAULT) : "",
         });
     }
     normalized.sort((left, right) => (
@@ -610,6 +671,7 @@ function applyEmbeddedMediaFromSerialized(node, info) {
                     filename,
                     subfolder: "",
                     storage: "input",
+                    audio_trim: mediaType === "audio" ? normalizeAudioTrimRange(values[`media_trim_${index}`] || AUDIO_TRIM_DEFAULT) : "",
                 });
             }
         }
@@ -650,7 +712,9 @@ function embeddedMediaFilename(item) {
 
 function setEmbeddedMedia(node, mediaType, ordinal, value) {
     const key = embeddedMediaKey(mediaType, ordinal);
-    const next = ensureEmbeddedMedia(node).filter((item) => embeddedMediaKey(item.media_type, item.ordinal) !== key);
+    const current = ensureEmbeddedMedia(node);
+    const previous = current.find((item) => embeddedMediaKey(item.media_type, item.ordinal) === key);
+    const next = current.filter((item) => embeddedMediaKey(item.media_type, item.ordinal) !== key);
     if (value?.filename) {
         next.push({
             media_type: String(mediaType),
@@ -658,6 +722,9 @@ function setEmbeddedMedia(node, mediaType, ordinal, value) {
             filename: String(value.filename),
             subfolder: String(value.subfolder || ""),
             storage: String(value.storage || "input"),
+            audio_trim: mediaType === "audio"
+                ? normalizeAudioTrimRange(value.audio_trim || previous?.audio_trim || AUDIO_TRIM_DEFAULT)
+                : "",
         });
     }
     node.properties[EMBEDDED_MEDIA_PROP] = next;
@@ -667,6 +734,30 @@ function setEmbeddedMedia(node, mediaType, ordinal, value) {
     requestMentionPreviewRefresh();
     node.setDirtyCanvas?.(true, true);
     app.graph?.change?.();
+}
+
+function audioTrimForSlot(node, ordinal) {
+    const record = ensureEmbeddedMedia(node).find((item) => item.media_type === "audio" && item.ordinal === ordinal);
+    return record ? normalizeAudioTrimRange(record.audio_trim) : AUDIO_TRIM_DEFAULT;
+}
+
+function audioTrimParts(value) {
+    const normalized = normalizeAudioTrimRange(value);
+    const [start = "00:00:000", end = "00:00:000"] = normalized.split("-", 2);
+    return { start, end };
+}
+
+function setEmbeddedAudioTrim(node, ordinal, value) {
+    const normalized = normalizeAudioTrimRange(value);
+    const records = ensureEmbeddedMedia(node);
+    const index = records.findIndex((item) => item.media_type === "audio" && item.ordinal === ordinal);
+    if (index < 0) return normalized;
+    records[index] = { ...records[index], audio_trim: normalized };
+    node.properties[EMBEDDED_MEDIA_PROP] = records;
+    syncEmbeddedMediaJsonWidget(node);
+    node.setDirtyCanvas?.(true, true);
+    app.graph?.change?.();
+    return normalized;
 }
 
 function ensureLinks(node) {
@@ -1686,6 +1777,7 @@ function patchGraphToPrompt() {
             for (let index = 1; index <= MAX_MEDIA; index += 1) {
                 delete promptNode.inputs[`media_${index}`];
                 delete promptNode.inputs[`media_type_${index}`];
+                delete promptNode.inputs[`media_trim_${index}`];
             }
             if (node.__h3Editor) syncPromptFromEditor(node, false);
             const runtimeLinks = embeddedMediaRecords(node);
@@ -1693,6 +1785,7 @@ function patchGraphToPrompt() {
                 const path = link.subfolder ? `${link.subfolder}/${link.filename}` : link.filename;
                 promptNode.inputs[`media_${index + 1}`] = path;
                 promptNode.inputs[`media_type_${index + 1}`] = String(link.media_type || "image");
+                promptNode.inputs[`media_trim_${index + 1}`] = link.media_type === "audio" ? normalizeAudioTrimRange(link.audio_trim) : "";
             });
             const promptInput = promptInputSlot(node);
             const promptLinkId = promptInput?.link;
@@ -4755,6 +4848,7 @@ function isTransportInputName(name) {
     return /^media$/i.test(String(name || ""))
         || /^media_[0-9]+$/i.test(String(name || ""))
         || /^media_type_[0-9]+$/i.test(String(name || ""))
+        || /^media_trim_[0-9]+$/i.test(String(name || ""))
         || /^prompt_optimizer_applied$/i.test(String(name || ""))
         || /^second_sampling_output_connected$/i.test(String(name || ""));
 }
@@ -5069,7 +5163,51 @@ function createEmbeddedMediaSection(node, mediaType, count, title) {
         grid.append(createEmbeddedMediaSlot(node, mediaType, ordinal));
     }
     section.append(heading, grid);
+    if (mediaType === "audio") section.append(createEmbeddedAudioTrimControls(node));
     return section;
+}
+
+function createEmbeddedAudioTrimControls(node) {
+    const wrap = document.createElement("div");
+    wrap.className = "fh-h3-audio-trim-grid";
+    wrap.title = TEXT.audioTrim;
+    for (let ordinal = 1; ordinal <= EMBEDDED_MEDIA_LIMITS.audio; ordinal += 1) {
+        const pair = document.createElement("div");
+        pair.className = "fh-h3-audio-trim-pair";
+        pair.dataset.audioTrimOrdinal = String(ordinal);
+        const parts = audioTrimParts(audioTrimForSlot(node, ordinal));
+        for (const side of ["start", "end"]) {
+            const input = document.createElement("input");
+            input.type = "text";
+            input.className = "fh-h3-audio-trim-input";
+            input.dataset.audioTrimSide = side;
+            input.placeholder = TEXT.audioTrimPlaceholder;
+            input.value = parts[side];
+            input.setAttribute("aria-label", `${TEXT.audioTrim} ${ordinal} ${side}`);
+            input.addEventListener("pointerdown", (event) => event.stopPropagation());
+            input.addEventListener("keydown", (event) => event.stopPropagation());
+            const commit = () => {
+                const start = pair.querySelector('[data-audio-trim-side="start"]')?.value || "00:00:000";
+                const end = pair.querySelector('[data-audio-trim-side="end"]')?.value || "00:00:000";
+                const normalized = setEmbeddedAudioTrim(node, ordinal, `${start}-${end}`);
+                const corrected = audioTrimParts(normalized);
+                pair.querySelector('[data-audio-trim-side="start"]').value = corrected.start;
+                pair.querySelector('[data-audio-trim-side="end"]').value = corrected.end;
+            };
+            input.addEventListener("change", commit);
+            input.addEventListener("blur", commit);
+            pair.append(input);
+            if (side === "start") {
+                const dash = document.createElement("span");
+                dash.className = "fh-h3-audio-trim-dash";
+                dash.textContent = "-";
+                dash.setAttribute("aria-hidden", "true");
+                pair.append(dash);
+            }
+        }
+        wrap.append(pair);
+    }
+    return wrap;
 }
 
 function embeddedGalleryHeight(reference, imageSlotHeight) {
@@ -5202,6 +5340,16 @@ function renderEmbeddedMediaGallery(node) {
                 });
                 cell.append(clear);
             }
+        }
+    }
+    for (let ordinal = 1; ordinal <= EMBEDDED_MEDIA_LIMITS.audio; ordinal += 1) {
+        const pair = gallery.querySelector(`.fh-h3-audio-trim-pair[data-audio-trim-ordinal="${ordinal}"]`);
+        if (!pair) continue;
+        const record = records.find((item) => item.media_type === "audio" && item.ordinal === ordinal);
+        const parts = audioTrimParts(record?.audio_trim || AUDIO_TRIM_DEFAULT);
+        for (const input of pair.querySelectorAll(".fh-h3-audio-trim-input")) {
+            input.disabled = !reference || !record;
+            input.value = input.dataset.audioTrimSide === "start" ? parts.start : parts.end;
         }
     }
     syncEmbeddedMediaResponsiveLayout(node);
@@ -5610,6 +5758,17 @@ function install() {
       }
       .fh-h3-media-grid.is-video .fh-h3-media-slot { height: var(--fh-h3-video-slot-height); }
       .fh-h3-media-grid.is-audio .fh-h3-media-slot { height: 54px; }
+      .fh-h3-audio-trim-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; min-width: 0; }
+      .fh-h3-audio-trim-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 3px; min-width: 0; }
+      .fh-h3-audio-trim-input {
+        display: block; width: 100%; min-width: 0; height: 24px; box-sizing: border-box; padding: 1px 5px;
+        border: 1px solid var(--h3-native-widget-outline, rgba(255,255,255,.18)); border-radius: 4px;
+        background: var(--h3-native-widget-bg, rgba(0,0,0,.22)); color: var(--h3-native-widget-text, rgba(255,255,255,.88));
+        font: 500 10px/1 Consolas, "Courier New", monospace; outline: none;
+      }
+      .fh-h3-audio-trim-input:focus { border-color: var(--h3-native-widget-focus, rgba(79,150,255,.9)); }
+      .fh-h3-audio-trim-input:disabled { opacity: .42; cursor: not-allowed; }
+      .fh-h3-audio-trim-dash { color: var(--h3-native-widget-muted, rgba(255,255,255,.52)); font: 700 11px/1 Consolas, "Courier New", monospace; user-select: none; }
       .fh-h3-media-slot:hover, .fh-h3-media-slot:focus-visible, .fh-h3-media-slot.is-dragover {
         border-color: rgba(0,226,187,.64); background: rgba(0,226,187,.075); outline: none;
       }

@@ -69,7 +69,7 @@ KEYFRAME_ALIASES = {
 }
 EMBEDDED_MEDIA_JSON_KEYS = ("embedded_media_json", "feihou_h3_embedded_media", "embedded_media")
 EMBEDDED_MEDIA_PROP = "feihou_h3_embedded_media"
-REFERENCE_SHORT_EDGES = ("480", "544", "640", "736", "768", "832", "928", "1024", "1088")
+REFERENCE_SHORT_EDGES = ("match", "480", "544", "640", "736", "768", "832", "928", "1024", "1088")
 REF_IMAGE_DEFAULT = "480"
 REFERENCE_MENTION_FILENAME = "filename"
 REFERENCE_MENTION_INDEX = "index"
@@ -526,7 +526,11 @@ def _parse_embedded_media_payload(value: Any) -> list[dict[str, str]]:
             media_type = _media_type_from_name(filename)
         if media_type not in {"image", "video", "audio"}:
             continue
-        records.append({"filename": filename, "media_type": media_type})
+        records.append({
+            "filename": filename,
+            "media_type": media_type,
+            "audio_trim": str(item.get("audio_trim") or item.get("trim_range") or ""),
+        })
     return records
 
 
@@ -573,7 +577,11 @@ def _records_from_named_mapping(values: Mapping[str, Any] | None) -> list[dict[s
             media_type = _media_type_from_name(filename)
         if media_type not in {"image", "video", "audio"}:
             continue
-        collected.append({"filename": filename, "media_type": media_type})
+        collected.append({
+            "filename": filename,
+            "media_type": media_type,
+            "audio_trim": str(values.get(f"media_trim_{index}") or ""),
+        })
     return collected
 
 
@@ -676,7 +684,12 @@ def _media_records_from_inputs(
             media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
             if media_type not in {"image", "video", "audio"}:
                 media_type = _infer_media_type(value) or "image"
-            records.append({"filename": "", "media_type": media_type, "value": value})
+            records.append({
+                "filename": "",
+                "media_type": media_type,
+                "value": value,
+                "audio_trim": str(kwargs.get(f"media_trim_{index}") or ""),
+            })
             continue
         filename = value.strip().replace("\\", "/")
         media_type = str(kwargs.get(f"media_type_{index}") or "").strip().lower()
@@ -684,7 +697,11 @@ def _media_records_from_inputs(
             media_type = _media_type_from_name(filename)
         if media_type not in {"image", "video", "audio"}:
             continue
-        records.append({"filename": filename, "media_type": media_type})
+        records.append({
+            "filename": filename,
+            "media_type": media_type,
+            "audio_trim": str(kwargs.get(f"media_trim_{index}") or ""),
+        })
     if records:
         return records
     named = _records_from_named_mapping(kwargs)
@@ -1652,7 +1669,7 @@ def _optimizer_reference_short_edge(value: Any) -> int:
         short_edge = int(str(value or REF_IMAGE_DEFAULT))
     except (TypeError, ValueError):
         short_edge = legacy_short_edges.get(str(value or "").strip().lower(), int(REF_IMAGE_DEFAULT))
-    allowed = tuple(int(item) for item in REFERENCE_SHORT_EDGES)
+    allowed = tuple(int(item) for item in REFERENCE_SHORT_EDGES if str(item).isdigit())
     return short_edge if short_edge in allowed else min(allowed, key=lambda item: abs(item - short_edge))
 
 
@@ -2468,10 +2485,12 @@ def _release_auxiliary_models_for_sampling(bundle: MiniMaxH3Bundle, phase: str =
 class MiniMaxH3Context:
     conditioning: Any
     latent: Any
+    clip: Any
     video_vae: Any
     audio_vae: Any
     fps: float
     prompt_preview: str
+    audio_1: Any = None
 
 
 @dataclass(frozen=True)
@@ -2480,6 +2499,7 @@ class _MediaInput:
     media_type: str
     value: Any
     filename: str = ""
+    audio_trim: str = ""
 
 
 class _AnyType(str):
@@ -2738,6 +2758,80 @@ def _encode_reference_audio(audio_vae, audio: Mapping):
     return latent, latent.shape[-1]
 
 
+def _audio_trim_seconds(value: Any) -> float:
+    """Parse time input with an optional millisecond component (100ms precision)."""
+    text = str(value or "").strip().replace("\uff1a", ":").replace("\uff0e", ".")
+    if not text:
+        return 0.0
+    text = re.sub(r"\s+", "", text)
+    if ":" not in text:
+        try:
+            return float(max(0, math.ceil(float(text))))
+        except (TypeError, ValueError):
+            return 0.0
+    parts = text.split(":")
+    if not parts or len(parts) > 4 or any(not part.isdigit() for part in parts):
+        return 0.0
+    values = [int(part) for part in parts]
+    if len(values) == 2:
+        return float(values[0] * 60 + values[1])
+    if len(values) == 3:
+        fraction = values[2] * (10 ** (3 - min(3, len(parts[2])))) / 1000.0
+        return math.ceil((values[0] * 60 + values[1] + fraction) * 10 - 1e-9) / 10.0
+    fraction = values[3] * (10 ** (3 - min(3, len(parts[3])))) / 1000.0
+    return math.ceil((values[0] * 3600 + values[1] * 60 + values[2] + fraction) * 10 - 1e-9) / 10.0
+
+
+def _audio_trim_range(value: Any) -> tuple[float, float]:
+    text = str(value or "").strip()
+    if not text:
+        return 0.0, 0.0
+    parts = re.split(r"\s*(?:-|~|\u2013|\u2014|\u81f3|to)\s*", text, maxsplit=1, flags=re.IGNORECASE)
+    if len(parts) == 1:
+        return 0.0, _audio_trim_seconds(parts[0])
+    start, end = _audio_trim_seconds(parts[0]), _audio_trim_seconds(parts[1])
+    if end > 0 and end < start:
+        start, end = end, start
+    return start, end
+
+
+def _trim_reference_audio(audio: Mapping, trim_range: Any) -> Mapping:
+    """Crop only the transient AUDIO payload used for H3 conditioning."""
+    if not str(trim_range or "").strip():
+        return audio
+    waveform = audio.get("waveform") if isinstance(audio, Mapping) else None
+    if not isinstance(waveform, torch.Tensor) or waveform.ndim < 1:
+        raise ValueError("Audio references must contain a waveform for time trimming")
+    sample_rate = _audio_sample_rate(audio)
+    if sample_rate <= 0:
+        raise ValueError("Audio reference has an invalid sample rate")
+    total_samples = int(waveform.shape[-1])
+    if total_samples <= 0:
+        raise ValueError("Audio reference is empty")
+    duration = total_samples / float(sample_rate)
+    start, end = _audio_trim_range(trim_range)
+    start = min(max(0.0, start), duration)
+    end = duration if end <= 0 else min(max(0.0, end), duration)
+    if end <= start:
+        raise ValueError("Audio trim end must be later than its start")
+    start_sample = min(total_samples - 1, max(0, int(round(start * sample_rate))))
+    end_sample = min(total_samples, max(start_sample + 1, int(round(end * sample_rate))))
+    trimmed = dict(audio)
+    trimmed["waveform"] = waveform[..., start_sample:end_sample]
+    return trimmed
+
+
+def _first_reference_audio(items: list[_MediaInput]) -> Any:
+    """Return Audio 1 in the same trimmed form sent to H3 conditioning."""
+    for item in items:
+        if item.media_type != "audio":
+            continue
+        if not isinstance(item.value, Mapping) or "waveform" not in item.value:
+            raise ValueError("Audio references must be AUDIO payloads")
+        return _trim_reference_audio(item.value, item.audio_trim)
+    return None
+
+
 def _replace_display_reference_tags(source: str, kind_tags: Mapping[str, Mapping[int, str]]) -> str:
     def replacer(match: re.Match[str]) -> str:
         kind_raw = str(match.group("kind") or match.group("kind2") or "")
@@ -2916,7 +3010,10 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     for item in audios:
         if not isinstance(item.value, Mapping) or "waveform" not in item.value:
             raise ValueError("Audio references must be AUDIO payloads")
-        audio_latent, audio_t = _encode_reference_audio(bundle.audio_vae, item.value)
+        audio_latent, audio_t = _encode_reference_audio(
+            bundle.audio_vae,
+            _trim_reference_audio(item.value, item.audio_trim),
+        )
         audio_ordinal += 1
         standalone_audio_ordinal += 1
         ref_items.append({"type": "audio"})
@@ -2960,6 +3057,7 @@ class FeiHouEasyH3:
             # the visible frontend definition so the gallery is the only UI.
             optional[f"media_{index}"] = ("STRING", {"default": "", "hidden": True})
             optional[f"media_type_{index}"] = ("STRING", {"default": "", "hidden": True})
+            optional[f"media_trim_{index}"] = ("STRING", {"default": "", "hidden": True})
         optional["prompt_optimizer_applied"] = ("BOOLEAN", {"default": False, "hidden": True})
         optional["second_sampling_output_connected"] = ("BOOLEAN", {"default": False, "hidden": True})
         optional["embedded_media_json"] = ("STRING", {"default": "", "multiline": True, "hidden": True})
@@ -3012,7 +3110,13 @@ class FeiHouEasyH3:
                 if not filename:
                     continue
                 value = _load_embedded_media(filename, media_type)
-            items.append(_MediaInput(index, media_type, value, str(record.get("filename") or "")))
+            items.append(_MediaInput(
+                index,
+                media_type,
+                value,
+                str(record.get("filename") or ""),
+                str(record.get("audio_trim") or ""),
+            ))
         return items
 
     @staticmethod
@@ -3082,6 +3186,17 @@ class FeiHouEasyH3:
             media_desc,
             str(prompt or "")[:160],
         )
+        second_sampling_model = None
+        second_sampling_requested = h3_bundle.second_sampling_enabled and second_sampling_connected
+        second_kind = "ref2va" if mode == MODE_REFERENCE else "fl2va"
+        second_sampling_active = False
+        if second_sampling_requested:
+            second_model_name = h3_bundle.second_ref2va_model_name if second_kind == "ref2va" else h3_bundle.second_fl2va_model_name
+            if _is_none_model(second_model_name):
+                model_label = "REF2VA" if second_kind == "ref2va" else "FL2VA"
+                raise ValueError(f"“自定义二采模型”已开启，但未选择 {model_label} 二采模型。请选择模型，或关闭该开关。")
+            second_sampling_active = True
+
         if mode == MODE_REFERENCE:
             if not items:
                 raise ValueError(
@@ -3105,8 +3220,17 @@ class FeiHouEasyH3:
             image_items = [item for item in items if item.media_type == "image"]
             first_frame, last_frame = cls._keyframes(image_items, keyframe_role)
             model = h3_bundle.model_for("fl2va")
-            conditioning, latent = _empty_image_conditioning(h3_bundle, prompt, width, height, length, first_frame, last_frame)
-            prompt_preview = str(prompt or "")
+            # The shared H3 Context is also consumed by the second pass.  If a
+            # second-pass model was actually read, build it as reference-to-
+            # video conditioning instead of I2V/FL2V conditioning.  One-pass
+            # I2V/FL2V keeps its original path and no UI switch is exposed.
+            if second_sampling_active and items:
+                conditioning, latent, prompt_preview = _reference_conditioning(
+                    h3_bundle, prompt, width, height, length, ref_image_size, items
+                )
+            else:
+                conditioning, latent = _empty_image_conditioning(h3_bundle, prompt, width, height, length, first_frame, last_frame)
+                prompt_preview = str(prompt or "")
         model_name = getattr(h3_bundle, "_model_name", "") or ""
         _LOGGER.info(
             "FeiHouEasyH3 using model_kind=%s model_name=%s refs=%s",
@@ -3118,22 +3242,19 @@ class FeiHouEasyH3:
             f"[EasyH3 mode={mode} model={model_name or '?'} media={media_desc}]\n"
             + str(prompt_preview or "")
         )
-        second_sampling_model = None
-        if h3_bundle.second_sampling_enabled:
-            second_kind = "ref2va" if mode == MODE_REFERENCE else "fl2va"
-            second_model_name = h3_bundle.second_ref2va_model_name if second_kind == "ref2va" else h3_bundle.second_fl2va_model_name
-            if _is_none_model(second_model_name):
-                model_label = "REF2VA" if second_kind == "ref2va" else "FL2VA"
-                raise ValueError(f"“自定义二采模型”已开启，但未选择 {model_label} 二采模型。请选择模型，或关闭该开关。")
-            if second_sampling_connected:
-                second_sampling_model = h3_bundle.second_sampling_model_for(second_kind)
+        if second_sampling_active:
+            # Keep the existing first->second transformer release marker: it
+            # is installed only when the first model is already available.
+            second_sampling_model = h3_bundle.second_sampling_model_for(second_kind)
         context = MiniMaxH3Context(
             conditioning=conditioning,
             latent=latent,
+            clip=h3_bundle.clip,
             video_vae=h3_bundle.video_vae,
             audio_vae=h3_bundle.audio_vae,
             fps=float(fps),
             prompt_preview=prompt_preview,
+            audio_1=_first_reference_audio(items),
         )
         if h3_bundle.force_offload_enabled:
             _release_auxiliary_models_for_sampling(h3_bundle, phase="first-pass sampling")
@@ -3146,8 +3267,9 @@ class FeiHouEasyH3:
 class FeiHouEasyH3Output:
     CATEGORY = "FeiHou Easy H3"
     FUNCTION = "unpack"
-    RETURN_TYPES = ("CONDITIONING", "LATENT", "VAE", "VAE", "FLOAT", "STRING")
-    RETURN_NAMES = ("positive", "latent", "video_vae", "audio_vae", "fps", "prompt_preview")
+    # Append new outputs so existing saved workflow links retain their slots.
+    RETURN_TYPES = ("CONDITIONING", "LATENT", "VAE", "VAE", "FLOAT", "STRING", "CLIP", "AUDIO")
+    RETURN_NAMES = ("positive", "latent", "video_vae", "audio_vae", "fps", "prompt_preview", "clip", "audio_1")
     DESCRIPTION = "Unpack the non-model outputs from a FeiHou Easy H3 context."
 
     @classmethod
@@ -3169,6 +3291,8 @@ class FeiHouEasyH3Output:
             h3_context.audio_vae,
             h3_context.fps,
             h3_context.prompt_preview,
+            h3_context.clip,
+            h3_context.audio_1,
         )
 
 

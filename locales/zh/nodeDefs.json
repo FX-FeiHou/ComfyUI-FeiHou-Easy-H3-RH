@@ -15,7 +15,7 @@
       "h3_bundle": { "name": "H3 模型组合" }, "mode": { "name": "模式", "options": { "image": "图生或首尾帧", "reference": "参考生视频" } },
       "prompt": { "name": "提示词" }, "resolution": { "name": "分辨率" }, "aspect_ratio": { "name": "宽高比" }, "width": { "name": "宽度" }, "height": { "name": "高度" }, "seconds": { "name": "秒数" }, "advanced": { "name": "高级选项" }, "force_offload": { "name": "强制卸载" }, "fps": { "name": "帧率（FPS）" },
       "keyframe_role": { "name": "首尾帧设置", "options": { "first": "首帧优先", "last": "尾帧优先" } },
-      "ref_image_size": { "name": "参考图尺寸（短边）" }, "reference_mention_mode": { "name": "@引用方式", "options": { "filename": "按文件名", "index": "按序号" } },
+      "ref_image_size": { "name": "参考图尺寸（短边）", "options": { "match": "匹配生成分辨率" } }, "reference_mention_mode": { "name": "@引用方式", "options": { "filename": "按文件名", "index": "按序号" } },
       "prompt_optimizer_enabled": { "name": "提示词优化" }, "prompt_optimizer_api_format": { "name": "API 格式（自动识别）" }, "prompt_optimizer_api_url": { "name": "API 地址" }, "prompt_optimizer_api_key": { "name": "API 密钥" }, "prompt_optimizer_model": { "name": "模型名" }, "prompt_optimizer_scene_guide": { "name": "提示词方案" }
     }, "outputs": { "0": { "name": "模型" }, "1": { "name": "二次采样模型" }, "2": { "name": "H3 Context" } }
   },
