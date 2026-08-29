@@ -4,6 +4,7 @@ from .nodes import (
     FeiHouEasyH3ModelAdapter,
     FeiHouEasyH3LoraStack,
     FeiHouEasyH3Output,
+    FeiHouEasyH3DurationCrop,
     FeiHouEasyH3PromptPreview,
 )
 
@@ -14,6 +15,7 @@ NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHModelAdapter": FeiHouEasyH3ModelAdapter,
     "FeiHouEasyH3RH": FeiHouEasyH3,
     "FeiHouEasyH3RHOutput": FeiHouEasyH3Output,
+    "FeiHouEasyH3RHDurationCrop": FeiHouEasyH3DurationCrop,
     "FeiHouEasyH3RHPromptPreview": FeiHouEasyH3PromptPreview,
 }
 
@@ -23,6 +25,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FeiHouEasyH3RHModelAdapter": "FeiHou Easy H3 模型中转 · RH",
     "FeiHouEasyH3RH": "ComfyUI-FeiHou-Easy-H3-RH",
     "FeiHouEasyH3RHOutput": "FeiHou Easy H3 输出 · RH",
+    "FeiHouEasyH3RHDurationCrop": "FeiHou Easy H3 数字人/MV 时长裁剪 · RH",
     "FeiHouEasyH3RHPromptPreview": "FeiHou Easy H3 提示词预览 · RH",
 }
 
