@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.1
+
+- Fixes the RH prompt preview so it no longer exposes internal media filenames or unresolved reference markers; stale mention IDs now fall back to the current gallery order.
+- Adds drag-to-reorder for embedded images, videos, and audio within their own media types.
+- Adds a play/stop control beside each reference-audio trim range. Preview playback follows the normalized trim range and does not change the source file or the H3 audio payload.
+
 ## v1.4.0
 
 - Adds **Digital human/MV auto duration**. When enabled, Audio 1's trimmed duration controls generation and locks the manual duration field.

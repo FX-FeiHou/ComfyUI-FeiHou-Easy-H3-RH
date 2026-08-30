@@ -2878,6 +2878,7 @@ def _resolve_reference_prompt(
     video_count: int,
     standalone_audio_count: int,
     kind_tags: Mapping[str, Mapping[int, str]] | None = None,
+    include_identity_guard: bool = True,
 ) -> str:
     # A workflow may intentionally contain fewer/more @ references than the
     # currently connected media. Resolve valid placeholders, but preserve
@@ -2895,13 +2896,16 @@ def _resolve_reference_prompt(
             for audio_index, video_index in soundtrack_pairs
         ]
         resolved = "\n".join((*provenance, resolved))
-    # A leftover optimizer essay can describe a previous gallery image.
-    # Tell the encoder that tagged media win over conflicting prose.
-    return (
-        "Use the tagged reference media as the only visual and audio identity. "
-        "If any later description conflicts with what those media actually show, follow the media.\n"
-        + resolved
-    )
+    # The guard is useful for the conditioning text, but it is internal
+    # transport guidance rather than the user's prompt.  Keep it out of the
+    # H3 Context preview so that the preview stays copyable and readable.
+    if include_identity_guard:
+        return (
+            "Use the tagged reference media as the only visual and audio identity. "
+            "If any later description conflicts with what those media actually show, follow the media.\n"
+            + resolved
+        )
+    return resolved
 
 
 def _align_canvas_dimension(value: float) -> int:
@@ -3053,6 +3057,10 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     if not ref_items or all(item.get("type") == "audio" for item in ref_items):
         raise ValueError("Reference mode needs at least one image or video")
 
+    preview_prompt = _resolve_reference_prompt(
+        prompt, tag_by_input, soundtrack_pairs, len(videos), len(audios), kind_tags,
+        include_identity_guard=False,
+    )
     resolved_prompt = _resolve_reference_prompt(
         prompt,
         tag_by_input,
@@ -3065,7 +3073,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     tokens = bundle.clip.tokenize(resolved_prompt, minimax_ref_items=ref_items)
     conditioning = bundle.clip.encode_from_tokens_scheduled(tokens)
     conditioning = node_helpers.conditioning_set_values(conditioning, {"minimax_refs": ref_blocks})
-    return conditioning, latent, resolved_prompt
+    return conditioning, latent, preview_prompt
 
 
 class FeiHouEasyH3:
@@ -3275,10 +3283,8 @@ class FeiHouEasyH3:
             model_name,
             bool(mode == MODE_REFERENCE and items),
         )
-        prompt_preview = (
-            f"[EasyH3 mode={mode} model={model_name or '?'} media={media_desc}]\n"
-            + str(prompt_preview or "")
-        )
+        # Keep diagnostics in the log; the H3 Context preview is user-facing.
+        prompt_preview = str(prompt_preview or "")
         if second_sampling_active:
             # Keep the existing first->second transformer release marker: it
             # is installed only when the first model is already available.
