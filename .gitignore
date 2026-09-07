@@ -4,3 +4,5 @@ prompt_optimizer.json
 .prompt_optimizer.*
 SYNC_TARGETS.json
 .DS_Store
+AGENTS.md
+SYNC_TARGETS.json

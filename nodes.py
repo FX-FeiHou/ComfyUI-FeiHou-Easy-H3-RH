@@ -1947,6 +1947,144 @@ def _run_configured_prompt_optimizer(
     return result, str(provider.get("id") or ""), model
 
 
+def _is_rh_llm_url(api_url: str) -> bool:
+    address = str(api_url or "").strip()
+    if not address:
+        return False
+    parsed = urllib.parse.urlsplit(address if "://" in address else "https://" + address)
+    host = str(parsed.hostname or "").lower()
+    return host in {"llm.runninghub.cn", "llm.runninghub.ai"}
+
+
+def _should_use_rh_llm(api_url: str, api_key: str) -> bool:
+    """Use the platform LLM unless the node has a complete third-party endpoint."""
+    if _is_rh_llm_url(api_url):
+        return True
+    return not str(api_url or "").strip()
+
+
+def _extract_rh_chat_text(data: Mapping[str, Any]) -> str:
+    choices = data.get("choices") if isinstance(data, Mapping) else None
+    if not choices or not isinstance(choices, list):
+        raise RuntimeError("RH LLM 返回了空 choices")
+    first = choices[0] if isinstance(choices[0], dict) else {}
+    message = first.get("message") if isinstance(first.get("message"), dict) else {}
+    content = message.get("content")
+    if isinstance(content, list):
+        content = "\n".join(
+            str(item.get("text", ""))
+            for item in content
+            if isinstance(item, dict) and item.get("text")
+        )
+    if content is None:
+        content = first.get("text")
+    text = str(content or "").strip()
+    if not text:
+        raise RuntimeError("RH LLM 返回了空内容")
+    return text
+
+
+def _run_rh_platform_prompt_optimizer(
+    prompt: str,
+    mode: str,
+    seconds: float,
+    model: str,
+    scene_guide: str,
+    media_counts: Mapping[str, Any] | None = None,
+    resources: list[Mapping[str, Any]] | None = None,
+    reference_short_edge: Any = REF_IMAGE_DEFAULT,
+    api_key: str = "",
+    api_config: Any = None,
+) -> tuple[str, str, str]:
+    """Optimize prompts through RunningHub LLM, same gateway as RH_LLMChat."""
+    from .rh_llm import RhOpenApiUnavailable, default_model, load_rh_helpers
+
+    try:
+        helpers = load_rh_helpers()
+    except RhOpenApiUnavailable as exc:
+        raise RuntimeError(str(exc)) from exc
+
+    get_config = helpers["get_config"]
+    post_chat_completion = helpers["post_chat_completion"]
+    get_llm_app_code = helpers["get_llm_app_code"]
+    remove_think_tags = helpers["remove_think_tags"]
+    perform_fixed_api_balance_precheck = helpers["perform_fixed_api_balance_precheck"]
+    llm_api_type = helpers["LLM_API_TYPE"]
+    llm_app_code_header = helpers["LLM_APP_CODE_HEADER"]
+
+    selected_model = str(model or "").strip() or default_model()
+    raw_counts = media_counts if isinstance(media_counts, Mapping) else {}
+    counts = {
+        kind: max(0, min(MAX_MEDIA, int(raw_counts.get(kind, 0) or 0)))
+        for kind in ("image", "video", "audio")
+    }
+    media_parts = _optimizer_media_parts(list(resources or []), "openai", reference_short_edge)
+    resolved_scene_guide, custom_prompt = _optimizer_scheme(_read_prompt_optimizer_config(), scene_guide)
+    system_prompt = _optimizer_system_prompt(
+        resolved_scene_guide,
+        str(mode or MODE_IMAGE),
+        min(MAX_SECONDS, max(MIN_SECONDS, float(seconds))),
+        counts,
+        len(media_parts),
+        custom_prompt,
+    )
+    user_prompt = str(prompt or "")
+    if not user_prompt.strip():
+        raise ValueError("提示词不能为空")
+
+    try:
+        perform_fixed_api_balance_precheck(llm_api_type, "FeiHouEasyH3RH")
+        config = get_config(api_config)
+    except Exception as exc:
+        raise RuntimeError(f"RH 平台 LLM 配置失败：{exc}") from exc
+
+    resolved_key = str(api_key or "").strip() or str(config.get("api_key") or "").strip()
+    if not resolved_key:
+        raise RuntimeError(
+            "RH API Key 未配置。请连接 RH OpenAPI Settings（api_config），"
+            "或使用平台 shared_api_key / RH_API_KEY。"
+        )
+
+    user_content: str | list[dict[str, Any]]
+    if media_parts:
+        user_content = [{"type": "text", "text": user_prompt}, *media_parts]
+    else:
+        user_content = user_prompt
+    payload = {
+        "model": selected_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "max_tokens": 4096,
+        "presence_penalty": 0.0,
+        "frequency_penalty": 0.0,
+        "reasoning_effort": "none",
+    }
+    headers = {
+        "Authorization": f"Bearer {resolved_key}",
+        "Content-Type": "application/json",
+        llm_app_code_header: get_llm_app_code(),
+    }
+    timeout = min(360, max(90, 90 + min(len(media_parts), 16) * 15 + min(len(system_prompt) + len(user_prompt), 8000) // 80))
+    _LOGGER.info(
+        "Easy H3 prompt optimize via RH LLM model=%s media=%s timeout=%s",
+        selected_model,
+        len(media_parts),
+        timeout,
+    )
+    try:
+        data = post_chat_completion(headers, payload, timeout, config)
+    except Exception as exc:
+        raise RuntimeError(f"RH 平台提示词优化失败：{exc}") from exc
+    text = remove_think_tags(_extract_rh_chat_text(data if isinstance(data, Mapping) else {}))
+    if not str(text or "").strip():
+        raise RuntimeError("RH 平台提示词优化返回内容为空")
+    return str(text).strip(), "rh-llm", selected_model
+
+
 def _run_node_prompt_optimizer(
     prompt: str,
     mode: str,
@@ -1959,8 +2097,22 @@ def _run_node_prompt_optimizer(
     media_counts: Mapping[str, Any] | None = None,
     resources: list[Mapping[str, Any]] | None = None,
     reference_short_edge: Any = REF_IMAGE_DEFAULT,
+    api_config: Any = None,
 ) -> tuple[str, str, str]:
-    """Run prompt optimization from credentials saved in the RH workflow node."""
+    """Run prompt optimization from node fields, defaulting to RH platform LLM."""
+    if _should_use_rh_llm(api_url, api_key):
+        return _run_rh_platform_prompt_optimizer(
+            prompt,
+            mode,
+            seconds,
+            model,
+            scene_guide,
+            media_counts,
+            resources,
+            reference_short_edge,
+            api_key,
+            api_config,
+        )
     normalized_format = _resolve_node_optimizer_api_format(api_format, api_url)
     model = str(model or "").strip()
     if not model:
@@ -2082,6 +2234,7 @@ def _register_prompt_optimizer_route() -> bool:
                 raw_counts,
                 resources,
                 payload.get("ref_image_size") or REF_IMAGE_DEFAULT,
+                payload.get("api_config"),
             )
             return web.json_response({
                 "ok": True,
@@ -2144,6 +2297,14 @@ def _filtered_choices(category: str, needles: tuple[str, ...], fallback: str) ->
     names = _collect_weight_names((category,))
     selected = [name for name in names if any(needle.lower() in _normalise_model_name(name).replace(" ", "") for needle in needles)]
     return _sort_model_names(selected) or [fallback]
+
+
+def _rh_llm_model_combo() -> tuple:
+    """RH platform LLM combo, same source as RH_LLMChat."""
+    from .rh_llm import default_model, fetch_models
+
+    models = fetch_models()
+    return (models, {"default": default_model(models)})
 
 
 def _rh_unet_model_combo() -> tuple:
@@ -3076,6 +3237,20 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     return conditioning, latent, preview_prompt
 
 
+def _validate_reference_media_transport(prompt, items):
+    """Check media before paid prompt optimization or model sampling."""
+    if not any(item.media_type in {"image", "video"} for item in items):
+        raise ValueError(
+            "Easy H3 RH: Reference-to-video received no image/video references. "
+            "参考生视频未收到图片或视频，请检查素材及插件冲突，重新保存工作流并刷新浏览器。"
+        )
+    if "__MINIMAX_H3_UNRESOLVED_REF_" in str(prompt):
+        raise ValueError(
+            "Easy H3 RH: Unresolved media references; reselect references before sampling. "
+            "提示词中的媒体引用未解析，请重新选择引用素材，已停止执行。"
+        )
+
+
 class FeiHouEasyH3:
     CATEGORY = "FeiHou Easy H3"
     FUNCTION = "generate"
@@ -3097,6 +3272,9 @@ class FeiHouEasyH3:
         optional["prompt_optimizer_applied"] = ("BOOLEAN", {"default": False, "hidden": True})
         optional["second_sampling_output_connected"] = ("BOOLEAN", {"default": False, "hidden": True})
         optional["embedded_media_json"] = ("STRING", {"default": "", "multiline": True, "hidden": True})
+        # Last optional slot, same contract as RH_LLMChat: connect Settings or
+        # leave empty to use PromptServer.shared_api_key / RH_API_KEY.
+        optional["api_config"] = ("RH_OPENAPI_CONFIG",)
         return {
             "required": {
                 "h3_bundle": ("MINIMAX_H3_BUNDLE",),
@@ -3114,10 +3292,10 @@ class FeiHouEasyH3:
                 "ref_image_size": (list(REFERENCE_SHORT_EDGES), {"default": REF_IMAGE_DEFAULT}),
                 "reference_mention_mode": ([REFERENCE_MENTION_FILENAME, REFERENCE_MENTION_INDEX], {"default": REFERENCE_MENTION_INDEX}),
                 "prompt_optimizer_enabled": ("BOOLEAN", {"default": False}),
-                "prompt_optimizer_api_format": (["auto", "openai", "gemini"], {"default": "auto"}),
-                "prompt_optimizer_api_url": ("STRING", {"default": "", "multiline": False}),
-                "prompt_optimizer_api_key": ("STRING", {"default": "", "multiline": False, "password": True}),
-                "prompt_optimizer_model": ("STRING", {"default": "", "multiline": False}),
+                "prompt_optimizer_api_format": (["auto", "openai", "gemini"], {"default": "auto", "hidden": True}),
+                "prompt_optimizer_api_url": ("STRING", {"default": "", "multiline": False, "hidden": True}),
+                "prompt_optimizer_api_key": ("STRING", {"default": "", "multiline": False, "password": True, "hidden": True}),
+                "prompt_optimizer_model": _rh_llm_model_combo(),
                 "prompt_optimizer_scene_guide": (prompt_schemes, {"default": default_prompt_scheme}),
                 "force_offload": ("BOOLEAN", {"default": False}),
             },
@@ -3134,6 +3312,20 @@ class FeiHouEasyH3:
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
+        if not (_as_bool(kwargs.get("advanced")) and _as_bool(kwargs.get("prompt_optimizer_enabled"))):
+            return True
+        if not _should_use_rh_llm(
+            str(kwargs.get("prompt_optimizer_api_url") or ""),
+            str(kwargs.get("prompt_optimizer_api_key") or ""),
+        ):
+            return True
+        try:
+            from .rh_llm import load_rh_helpers
+
+            helpers = load_rh_helpers()
+            helpers["perform_fixed_api_balance_precheck"](helpers["LLM_API_TYPE"], "FeiHouEasyH3RH")
+        except Exception as exc:
+            return str(exc)
         return True
 
     @staticmethod
@@ -3174,7 +3366,7 @@ class FeiHouEasyH3:
         return images[0], images[1]
 
     @classmethod
-    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, audio_duration_auto, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", force_offload=False, prompt_optimizer_applied=False, embedded_media_json="", extra_pnginfo=None, unique_id=None, **kwargs):
+    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, audio_duration_auto=False, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", force_offload=False, prompt_optimizer_applied=False, embedded_media_json="", extra_pnginfo=None, unique_id=None, api_config=None, **kwargs):
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
         # ``advanced`` may itself come from an external input. Keep the backend
@@ -3191,6 +3383,8 @@ class FeiHouEasyH3:
         keyframe_role = _canonical_keyframe_role(keyframe_role)
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
         items = cls._collect_media(kwargs, extra_pnginfo, unique_id)
+        if mode == MODE_REFERENCE:
+            _validate_reference_media_transport(prompt, items)
         audio_duration_enabled = _as_bool(audio_duration_auto)
         requested_audio_seconds = 0.0
         if audio_duration_enabled:
@@ -3217,6 +3411,7 @@ class FeiHouEasyH3:
                     _media_counts_from_kwargs(kwargs, extra_pnginfo, unique_id),
                     _optimizer_resources_from_kwargs(kwargs, extra_pnginfo, unique_id),
                     ref_image_size,
+                    api_config if api_config is not None else kwargs.get("api_config"),
                 )
             except Exception as exc:
                 raise RuntimeError(f"Easy H3 提示词扩写/反推失败: {exc}") from exc

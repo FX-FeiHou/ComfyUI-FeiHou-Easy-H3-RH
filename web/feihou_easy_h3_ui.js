@@ -7,6 +7,7 @@ const NODE_CLASS = "FeiHouEasyH3RH";
 const LOADER_CLASS = "FeiHouEasyH3RHLoader";
 const ADAPTER_CLASS = "FeiHouEasyH3RHModelAdapter";
 const OUTPUT_CLASS = "FeiHouEasyH3RHOutput";
+const DURATION_CROP_CLASS = "FeiHouEasyH3RHDurationCrop";
 const PROMPT_PREVIEW_CLASS = "FeiHouEasyH3RHPromptPreview";
 const LINKS_PROP = "minimax_h3_virtual_media_links";
 const EMBEDDED_MEDIA_PROP = "feihou_h3_embedded_media";
@@ -79,7 +80,7 @@ const TEXT = {
     apiKey: ZH_BROWSER ? "API 密钥" : "API key",
     apiModel: ZH_BROWSER ? "\u6a21\u578b\u540d" : "Model",
     promptGuide: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u65b9\u6848" : "Prompt Guide",
-    optimizerMissing: ZH_BROWSER ? "\u8bf7\u5728\u8282\u70b9\u5185\u586b\u5199 API \u5730\u5740\u3001API Key \u548c\u6a21\u578b\u540d\u3002" : "Enter the API URL, API key, and model in this node first.",
+    optimizerMissing: ZH_BROWSER ? "\u81ea\u5b9a\u4e49\u63a5\u53e3\u9700\u586b\u5199 API \u5730\u5740\u3001Key \u548c\u6a21\u578b\u540d\u3002\u7559\u7a7a\u5219\u8d70 RH \u5e73\u53f0 LLM\u3002" : "Custom APIs need a URL, key, and model. Leave them empty to use the RunningHub LLM.",
     optimizerDisabled: ZH_BROWSER ? "\u8bf7\u5148\u6253\u5f00\u9ad8\u7ea7\u9009\u9879\u548c\u63d0\u793a\u8bcd\u4f18\u5316\u8bbe\u7f6e\u3002" : "Enable Advanced options and prompt optimization settings first.",
     optimizerFailed: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u4f18\u5316\u5931\u8d25" : "Prompt optimization failed",
     optimizerRunning: ZH_BROWSER ? "\u6b63\u5728\u4f18\u5316" : "Optimizing",
@@ -93,6 +94,7 @@ const TEXT = {
     loaderTitle: ZH_BROWSER ? "FeiHou Easy H3 \u52a0\u8f7d\u5668" : "FeiHou Easy H3 Loader",
     adapterTitle: ZH_BROWSER ? "FeiHou Easy H3 \u6a21\u578b\u4e2d\u8f6c" : "FeiHou Easy H3 Model Bridge",
     outputTitle: ZH_BROWSER ? "FeiHou Easy H3 \u8f93\u51fa" : "FeiHou Easy H3 Output",
+    durationCropTitle: ZH_BROWSER ? "FeiHou Easy H3 \u6570\u5b57\u4eba/MV \u65f6\u957f\u88c1\u526a" : "FeiHou Easy H3 Digital human/MV Duration Crop",
     category: "FeiHou Easy H3",
     mode: ZH_BROWSER ? "\u6a21\u5f0f" : "Mode",
     prompt: ZH_BROWSER ? "\u63d0\u793a\u8bcd" : "Prompt",
@@ -106,9 +108,9 @@ const TEXT = {
     forceOffload: ZH_BROWSER ? "\u5f3a\u5236\u5378\u8f7d" : "Force offload",
     promptOptimizerEnabled: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u4f18\u5316\u8bbe\u7f6e" : "Prompt optimization settings",
     promptOptimizerApiFormat: ZH_BROWSER ? "API 格式（自动识别）" : "API format (auto-detect)",
-    promptOptimizerApiUrl: ZH_BROWSER ? "API \u5730\u5740" : "API URL",
-    promptOptimizerApiKey: ZH_BROWSER ? "API 密钥" : "API key",
-    promptOptimizerModel: ZH_BROWSER ? "\u6a21\u578b\u540d" : "Model",
+    promptOptimizerApiUrl: ZH_BROWSER ? "API \u5730\u5740\uff08\u7559\u7a7a=RH\uff09" : "API URL (empty = RH)",
+    promptOptimizerApiKey: ZH_BROWSER ? "API \u5bc6\u94a5\uff08\u7559\u7a7a=RH\uff09" : "API key (empty = RH)",
+    promptOptimizerModel: ZH_BROWSER ? "\u6a21\u578b" : "Model",
     promptOptimizerSceneGuide: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u65b9\u6848" : "Prompt Guide",
     fps: ZH_BROWSER ? "\u5e27\u7387 (FPS)" : "Frame rate (FPS)",
     keyframeRole: ZH_BROWSER ? "\u9996\u5c3e\u5e27\u8bbe\u7f6e" : "First/last frame setup",
@@ -117,6 +119,7 @@ const TEXT = {
     mentionByFilename: ZH_BROWSER ? "\u6309\u6587\u4ef6\u540d" : "By filename",
     mentionByIndex: ZH_BROWSER ? "\u6309\u5e8f\u53f7" : "By index",
     bundle: ZH_BROWSER ? "H3 \u6a21\u578b\u7ec4\u5408" : "H3 model bundle",
+    apiConfig: "api_config",
     fl2vaModel: ZH_BROWSER ? "FL2VA \u6a21\u578b" : "FL2VA model",
     ref2vaModel: ZH_BROWSER ? "REF2VA \u6a21\u578b" : "REF2VA model",
     textEncoder: ZH_BROWSER ? "\u6587\u672c\u7f16\u7801\u5668" : "Text encoder",
@@ -136,6 +139,8 @@ const TEXT = {
     outputVideoVae: "Video VAE",
     outputAudioVae: "Audio VAE",
     outputAudio1: ZH_BROWSER ? "Audio 1 \u97f3\u9891" : "Audio 1",
+    outputDurationControl: ZH_BROWSER ? "\u65f6\u957f\u63a7\u5236" : "Duration control",
+    durationCropImages: ZH_BROWSER ? "\u56fe\u50cf" : "Images",
     outputFps: "FPS",
     outputPromptPreview: ZH_BROWSER ? "\u63d0\u793a\u8bcd\u53cd\u63a8\u8f93\u51fa" : "Prompt inference output",
     outputContext: "H3 Context",
@@ -280,33 +285,37 @@ let lastVueNodesMode = null;
 
 function nodeMatchesClass(node, className, displayName, installedMarker) {
     if (!node) return false;
-    if (node.constructor?.prototype?.[installedMarker]) return true;
+    // A private installation marker is not node ownership. Match class IDs,
+    // never editable titles or shared flags from another H3 extension.
     const candidates = [
         node.comfyClass,
         node.type,
         node.constructor?.comfyClass,
         node.constructor?.type,
         node.constructor?.nodeData?.name,
-        node.constructor?.nodeData?.display_name,
-        node.title,
     ];
-    return candidates.some((value) => value != null && [className, displayName].includes(String(value)));
+    const identity = candidates.find((value) => typeof value === "string" && value.length > 0);
+    return identity === className;
 }
 
 function isTarget(node) {
-    return nodeMatchesClass(node, NODE_CLASS, TEXT.mainTitle, "__h3EasyNodeInstalled");
+    return nodeMatchesClass(node, NODE_CLASS, TEXT.mainTitle, "__feihouRHH3EasyNodeInstalled");
 }
 
 function isLoader(node) {
-    return nodeMatchesClass(node, LOADER_CLASS, TEXT.loaderTitle, "__h3EasyLoaderInstalled");
+    return nodeMatchesClass(node, LOADER_CLASS, TEXT.loaderTitle, "__feihouRHH3EasyLoaderInstalled");
 }
 
 function isAdapter(node) {
-    return nodeMatchesClass(node, ADAPTER_CLASS, TEXT.adapterTitle, "__h3EasyAdapterInstalled");
+    return nodeMatchesClass(node, ADAPTER_CLASS, TEXT.adapterTitle, "__feihouRHH3EasyAdapterInstalled");
 }
 
 function isOutput(node) {
-    return nodeMatchesClass(node, OUTPUT_CLASS, TEXT.outputTitle, "__h3EasyOutputInstalled");
+    return nodeMatchesClass(node, OUTPUT_CLASS, TEXT.outputTitle, "__feihouRHH3EasyOutputInstalled");
+}
+
+function isDurationCrop(node) {
+    return nodeMatchesClass(node, DURATION_CROP_CLASS, TEXT.durationCropTitle, "__feihouRHH3EasyDurationCropInstalled");
 }
 
 function canonicalOption(name, value) {
@@ -429,7 +438,18 @@ function localizeNodeInstance(node) {
         for (const input of node.inputs || []) {
             if (input.name === "h3_context") setLocalizedSlotLabel(input, TEXT.outputContext);
         }
-        const outputLabels = { positive: TEXT.outputConditioning, latent: TEXT.outputLatent, clip: TEXT.outputClip, video_vae: TEXT.outputVideoVae, audio_vae: TEXT.outputAudioVae, audio_1: TEXT.outputAudio1, fps: TEXT.outputFps, prompt_preview: TEXT.outputPromptPreview };
+        const outputLabels = { positive: TEXT.outputConditioning, latent: TEXT.outputLatent, clip: TEXT.outputClip, video_vae: TEXT.outputVideoVae, audio_vae: TEXT.outputAudioVae, audio_1: TEXT.outputAudio1, duration_control: TEXT.outputDurationControl, fps: TEXT.outputFps, prompt_preview: TEXT.outputPromptPreview };
+        for (const output of node.outputs || []) {
+            const key = String(output.name || "").toLowerCase();
+            if (outputLabels[key]) setLocalizedSlotLabel(output, outputLabels[key]);
+        }
+        return;
+    }
+    if (isDurationCrop(node)) {
+        node.title = TEXT.durationCropTitle;
+        const labels = { images: TEXT.durationCropImages, fps: TEXT.fps, duration_control: TEXT.outputDurationControl, audio: TEXT.audio };
+        for (const input of node.inputs || []) if (labels[input.name]) setLocalizedSlotLabel(input, labels[input.name]);
+        const outputLabels = { images: TEXT.durationCropImages, fps: TEXT.outputFps, audio: TEXT.audio };
         for (const output of node.outputs || []) {
             const key = String(output.name || "").toLowerCase();
             if (outputLabels[key]) setLocalizedSlotLabel(output, outputLabels[key]);
@@ -445,6 +465,7 @@ function localizeNodeInstance(node) {
     }
     for (const input of node.inputs || []) {
         if (input.name === "h3_bundle") setLocalizedSlotLabel(input, TEXT.bundle);
+        if (input.name === "api_config") setLocalizedSlotLabel(input, TEXT.apiConfig);
         if (input.name === "media") setLocalizedSlotLabel(input, TEXT.inputMedia);
     }
     const outputLabels = { model: TEXT.outputModel, second_sampling_model: TEXT.outputSecondSamplingModel, h3_context: TEXT.outputContext };
@@ -455,13 +476,15 @@ function localizeNodeInstance(node) {
 }
 
 function localizeNodeDefinition(nodeData) {
-    if (!nodeData || ![NODE_CLASS, LOADER_CLASS, ADAPTER_CLASS, OUTPUT_CLASS].includes(nodeData.name)) return;
+    if (!nodeData || ![NODE_CLASS, LOADER_CLASS, ADAPTER_CLASS, OUTPUT_CLASS, DURATION_CROP_CLASS].includes(nodeData.name)) return;
     nodeData.display_name = nodeData.name === LOADER_CLASS
         ? TEXT.loaderTitle
         : nodeData.name === ADAPTER_CLASS
             ? TEXT.adapterTitle
             : nodeData.name === OUTPUT_CLASS
             ? TEXT.outputTitle
+            : nodeData.name === DURATION_CROP_CLASS
+            ? TEXT.durationCropTitle
             : TEXT.mainTitle;
     nodeData.category = TEXT.category;
 }
@@ -473,6 +496,18 @@ function getWidget(node, name) {
 function getWidgetValue(node, name, fallback = "") {
     const widget = getWidget(node, name);
     return widget?.value ?? fallback;
+}
+
+function connectedApiConfig(node) {
+    const input = (node?.inputs || []).find((item) => item?.name === "api_config");
+    if (input?.link == null) return null;
+    const link = node.graph?.links?.[input.link];
+    const origin = node.graph?.getNodeById?.(link?.origin_id);
+    if (!origin) return null;
+    const baseUrl = String(getWidgetValue(origin, "base_url", "") || "").trim();
+    const apiKey = String(getWidgetValue(origin, "apiKey", "") || getWidgetValue(origin, "api_key", "") || "").trim();
+    if (!baseUrl && !apiKey) return null;
+    return [{ base_url: baseUrl, apiKey }];
 }
 
 function asBoolean(value, fallback = false) {
@@ -1559,7 +1594,7 @@ function scheduleDeferredInputCreateMenu(canvas, event, pending, allowed) {
 
 function installQuickCreateCapture(canvas) {
     if (!canvas?.canvas || !canvas?.linkConnector?.events) return false;
-    if (canvas === quickCreateCaptureCanvas && canvas.__h3EasyQuickCreateCaptureInstalled) return true;
+    if (canvas === quickCreateCaptureCanvas && canvas.__feihouRHH3EasyQuickCreateCaptureInstalled) return true;
 
     // Nodes 2.0 can replace app.canvas while the page is starting. A module-global
     // "installed" flag leaves the handlers attached to the discarded canvas and
@@ -1568,7 +1603,7 @@ function installQuickCreateCapture(canvas) {
     quickCreateCaptureCleanup?.();
     quickCreateCaptureCleanup = null;
     quickCreateCaptureCanvas = canvas;
-    canvas.__h3EasyQuickCreateCaptureInstalled = true;
+    canvas.__feihouRHH3EasyQuickCreateCaptureInstalled = true;
     const handler = (event) => {
         // A ContextMenu item click also bubbles through the global pointer-up
         // listeners while the temporary connector is still being held. Without
@@ -1650,7 +1685,7 @@ function installQuickCreateCapture(canvas) {
         events.removeEventListener?.("dropped-on-canvas", droppedOnCanvasHandler, { capture: true });
         if (wrappedDispatch && events.dispatch === wrappedDispatch) events.dispatch = originalDispatch;
         if (events.dispatchEvent === wrappedDispatchEvent) events.dispatchEvent = originalDispatchEvent;
-        canvas.__h3EasyQuickCreateCaptureInstalled = false;
+        canvas.__feihouRHH3EasyQuickCreateCaptureInstalled = false;
         if (quickCreateCaptureCanvas === canvas) quickCreateCaptureCanvas = null;
     };
     return true;
@@ -2159,10 +2194,10 @@ function requestMentionPreviewRefresh() {
 
 function watchMediaSourceNode(node) {
     if (!node) return;
-    node.__h3MediaSourceWatchInstalled = true;
+    node.__feihouRHH3MediaSourceWatchInstalled = true;
     for (const widget of node.widgets || []) {
-        if (!widget || widget.__h3MediaSourceWatchInstalled) continue;
-        widget.__h3MediaSourceWatchInstalled = true;
+        if (!widget || widget.__feihouRHH3MediaSourceWatchInstalled) continue;
+        widget.__feihouRHH3MediaSourceWatchInstalled = true;
         const originalCallback = widget.callback;
         widget.callback = function onMediaSourceWidgetChange(value) {
             const result = originalCallback?.apply(this, arguments);
@@ -2178,8 +2213,8 @@ function watchMediaSourceNode(node) {
 function installMediaSourceNode(nodeType, nodeData) {
     const name = String(nodeData?.name || "").toLowerCase();
     if (!name.includes("loadimage") && !name.includes("loadvideo") && !name.includes("loadaudio")) return;
-    if (nodeType.prototype.__h3MediaSourceInstalled) return;
-    nodeType.prototype.__h3MediaSourceInstalled = true;
+    if (nodeType.prototype.__feihouRHH3MediaSourceInstalled) return;
+    nodeType.prototype.__feihouRHH3MediaSourceInstalled = true;
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3MediaSource() {
         const result = originalCreated?.apply(this, arguments);
@@ -3625,9 +3660,9 @@ function syncModeWidgets(node, { adjustHeight = true } = {}) {
         setConditionalWidgetVisible(node, getWidget(node, "reference_mention_mode"), advanced && isReferenceMode(node), { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "force_offload"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_enabled"), advanced, { adjustHeight }),
-        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_format"), optimizerEnabled, { adjustHeight }),
-        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_url"), optimizerEnabled, { adjustHeight }),
-        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_key"), optimizerEnabled, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_format"), false, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_url"), false, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_key"), false, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_model"), optimizerEnabled, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_scene_guide"), optimizerEnabled, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "aspect_ratio"), !isCustomResolution(node), { adjustHeight }),
@@ -3829,6 +3864,21 @@ async function loadPromptOptimizerSettings({ force = false } = {}) {
     return promptOptimizerSettingsPromise;
 }
 
+function isRhLlmUrl(apiUrl) {
+    const raw = String(apiUrl || "").trim();
+    if (!raw) return false;
+    try {
+        const host = new URL(raw.includes("://") ? raw : `https://${raw}`).hostname.toLowerCase();
+        return host === "llm.runninghub.cn" || host === "llm.runninghub.ai";
+    } catch {
+        return /llm\.runninghub\.(cn|ai)/i.test(raw);
+    }
+}
+
+function usesRhPlatformLlm(state) {
+    return !String(state?.api_url || "").trim() || isRhLlmUrl(state?.api_url);
+}
+
 function promptOptimizerState(node) {
     return {
         enabled: asBoolean(getWidgetValue(node, "prompt_optimizer_enabled", false)),
@@ -3909,7 +3959,7 @@ function syncPromptOptimizerButton(node) {
     const enabled = advanced && state.enabled;
     const model = state.model;
     const keyReady = state.api_format === "ollama" || Boolean(String(state.api_key || "").trim());
-    const configured = enabled && Boolean(String(state.api_url || "").trim() && String(model || "").trim() && keyReady);
+    const configured = enabled && (usesRhPlatformLlm(state) || Boolean(String(state.api_url || "").trim() && String(model || "").trim() && keyReady));
     const external = promptInputIsConnected(node);
     const pending = Boolean(node.__h3OptimizerPending);
     const locked = external || pending;
@@ -4007,7 +4057,7 @@ async function optimizePromptFromEditor(node) {
     const resources = promptOptimizerResources(node);
     const model = state.model;
     const keyReady = state.api_format === "ollama" || Boolean(String(state.api_key || "").trim());
-    if (!String(state.api_url || "").trim() || !String(model || "").trim() || !keyReady) {
+    if (!usesRhPlatformLlm(state) && (!String(state.api_url || "").trim() || !String(model || "").trim() || !keyReady)) {
         notifyPromptOptimizer(TEXT.optimizerMissing);
         return;
     }
@@ -4038,6 +4088,7 @@ async function optimizePromptFromEditor(node) {
                 scene_guide: canonicalPromptGuide(getWidgetValue(node, "prompt_optimizer_scene_guide", "none")),
                 media_counts: mediaCounts,
                 resources,
+                api_config: connectedApiConfig(node),
             }),
         });
         const data = await response.json().catch(() => ({}));
@@ -5088,7 +5139,7 @@ function repairConfiguredWidgetValues(node, info) {
         prompt_optimizer_api_format: "auto",
         prompt_optimizer_api_url: "",
         prompt_optimizer_api_key: "",
-        prompt_optimizer_model: "",
+        prompt_optimizer_model: "google/gemini-3.1-flash-lite-preview",
         prompt_optimizer_scene_guide: "none",
         force_offload: false,
     };
@@ -5150,7 +5201,9 @@ function repairConfiguredWidgetValues(node, info) {
             ? canonicalOption("prompt_optimizer_api_format", values[14]) : defaults.prompt_optimizer_api_format,
         prompt_optimizer_api_url: typeof values[15] === "string" ? values[15] : defaults.prompt_optimizer_api_url,
         prompt_optimizer_api_key: typeof values[16] === "string" ? values[16] : defaults.prompt_optimizer_api_key,
-        prompt_optimizer_model: typeof values[17] === "string" ? values[17] : defaults.prompt_optimizer_model,
+        prompt_optimizer_model: typeof values[17] === "string" && values[17].trim()
+            ? values[17].trim()
+            : defaults.prompt_optimizer_model,
         prompt_optimizer_scene_guide: canonicalPromptGuide(values[18] ?? defaults.prompt_optimizer_scene_guide),
         force_offload: asBoolean(values[19], defaults.force_offload),
     };
@@ -5666,8 +5719,8 @@ function installNode(nodeType, nodeData) {
     if (nodeType?.prototype?.constructor?.nodeData && nodeType.prototype.constructor.nodeData !== nodeData) {
         pruneTransportInputs(nodeType.prototype.constructor.nodeData);
     }
-    if (nodeType.prototype.__h3EasyNodeInstalled) return;
-    nodeType.prototype.__h3EasyNodeInstalled = true;
+    if (nodeType.prototype.__feihouRHH3EasyNodeInstalled) return;
+    nodeType.prototype.__feihouRHH3EasyNodeInstalled = true;
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3Easy() {
         const result = originalCreated?.apply(this, arguments);
@@ -5822,8 +5875,8 @@ function installNode(nodeType, nodeData) {
 
 function installLoaderNode(nodeType, nodeData) {
     if (nodeData?.name !== LOADER_CLASS) return;
-    if (nodeType.prototype.__h3EasyLoaderInstalled) return;
-    nodeType.prototype.__h3EasyLoaderInstalled = true;
+    if (nodeType.prototype.__feihouRHH3EasyLoaderInstalled) return;
+    nodeType.prototype.__feihouRHH3EasyLoaderInstalled = true;
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3Loader() {
         const result = originalCreated?.apply(this, arguments);
@@ -5851,8 +5904,8 @@ function installLoaderNode(nodeType, nodeData) {
 
 function installAdapterNode(nodeType, nodeData) {
     if (nodeData?.name !== ADAPTER_CLASS) return;
-    if (nodeType.prototype.__h3EasyAdapterInstalled) return;
-    nodeType.prototype.__h3EasyAdapterInstalled = true;
+    if (nodeType.prototype.__feihouRHH3EasyAdapterInstalled) return;
+    nodeType.prototype.__feihouRHH3EasyAdapterInstalled = true;
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3Adapter() {
         const result = originalCreated?.apply(this, arguments);
@@ -5867,10 +5920,28 @@ function installAdapterNode(nodeType, nodeData) {
     };
 }
 
+function installDurationCropNode(nodeType, nodeData) {
+    if (nodeData?.name !== DURATION_CROP_CLASS) return;
+    if (nodeType.prototype.__feihouRHH3EasyDurationCropInstalled) return;
+    nodeType.prototype.__feihouRHH3EasyDurationCropInstalled = true;
+    const originalCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function onNodeCreatedH3DurationCrop() {
+        const result = originalCreated?.apply(this, arguments);
+        localizeNodeInstance(this);
+        return result;
+    };
+    const originalConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function onConfigureH3DurationCrop(info) {
+        const result = originalConfigure?.apply(this, arguments);
+        localizeNodeInstance(this);
+        return result;
+    };
+}
+
 function installOutputNode(nodeType, nodeData) {
     if (nodeData?.name !== OUTPUT_CLASS) return;
-    if (nodeType.prototype.__h3EasyOutputInstalled) return;
-    nodeType.prototype.__h3EasyOutputInstalled = true;
+    if (nodeType.prototype.__feihouRHH3EasyOutputInstalled) return;
+    nodeType.prototype.__feihouRHH3EasyOutputInstalled = true;
     const originalCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function onNodeCreatedH3Output() {
         const result = originalCreated?.apply(this, arguments);
@@ -6137,6 +6208,7 @@ app.registerExtension({
             "FeiHouEasyH3RHLoader",
             "FeiHouEasyH3RHModelAdapter",
             "FeiHouEasyH3RHOutput",
+            "FeiHouEasyH3RHDurationCrop",
         ],
     },
     // RH change --end--
@@ -6148,6 +6220,7 @@ app.registerExtension({
         installLoaderNode(nodeType, nodeData);
         installAdapterNode(nodeType, nodeData);
         installOutputNode(nodeType, nodeData);
+        installDurationCropNode(nodeType, nodeData);
         installNode(nodeType, nodeData);
     },
 });

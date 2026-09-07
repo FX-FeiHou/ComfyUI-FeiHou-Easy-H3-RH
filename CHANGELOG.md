@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.2
+
+- Integrates the RunningHub 260907 LLM API adaptation, preserving platform model selection, RH_OPENAPI_CONFIG, authentication and balance prechecks.
+- Isolates RH frontend installation markers from standard Easy H3 and other H3 extensions; matches real node class IDs instead of titles/shared flags.
+- Checks reference-media availability and unresolved references before prompt optimization or sampling, preserving RH resource loading and existing input order.
+- Validation: original-baseline AST/file checks, CPU media-guard tests and both transport-wrapper orders. Live RunningHub LLM calls and full GPU generation were not performed locally.
+
 ## v1.4.1
 
 - Fixes the RH prompt preview so it no longer exposes internal media filenames or unresolved reference markers; stale mention IDs now fall back to the current gallery order.

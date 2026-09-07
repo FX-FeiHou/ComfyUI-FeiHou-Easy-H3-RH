@@ -20,6 +20,7 @@ import { rgthreeApi } from "../../rgthree/common/rgthree_api.js";
 import { moveArrayItem, removeArrayItem } from "../../rgthree/common/shared_utils.js";
 
 const STACK_CLASS = "FeiHouEasyH3RHLoraStack";
+const STACK_TITLE = "加载LoRA（旁路，仅模型）（用于调试）";
 const STACK_WIDTH = 440;
 const BOTTOM_MARGIN = 14;
 
