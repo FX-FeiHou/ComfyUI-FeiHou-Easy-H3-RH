@@ -542,8 +542,9 @@ const EMBEDDED_MEDIA_LIMITS = Object.freeze({ image: 9, video: 3, audio: 3 });
 const EMBEDDED_MEDIA_ORDER = Object.freeze({ image: 0, video: 1, audio: 2 });
 const EMBEDDED_MEDIA_LAYOUT = Object.freeze({
     imageSlotBase: 72,
-    // Request only the height that was added to the node. This lets ComfyUI
-    // distribute gallery and prompt space without visual overlap.
+    // Gallery and prompt heights are distributed by ComfyUI together. Keep
+    // their requested growth equal to the actual added node height so the
+    // gallery never renders beyond the space allocated to it.
     previewGrowthRate: 1,
     imageSlotMin: 48,
     imageSlotMax: 128,
@@ -551,7 +552,13 @@ const EMBEDDED_MEDIA_LAYOUT = Object.freeze({
     promptBase: 96,
     promptMin: 50,
     galleryPromptGap: 8,
-    // Keep the gallery-to-prompt gap identical to ordinary ComfyUI widget rows.
+    workbenchPaddingTop: 2,
+    promptBottomGap: 12,
+    // Fixed rows/gaps inside the gallery. Keep this in sync with the CSS below:
+    // headings (16px), section/grid gaps (4px), grid gaps (4px), gallery
+    // gaps (8px), gallery padding (2px top/bottom), and the fixed 54px audio row.
+    // A DOM widget with margin: 0 still has ComfyUI's fixed 4px widget-row
+    // layout offset. Keep it separate from the actual media content height.
     widgetRowOffset: 4,
     imageModeChrome: 32,
     referenceModeChrome: 170,
@@ -4925,6 +4932,7 @@ function ensurePromptEditor(node) {
     repairNodeLayout(node);
 }
 
+
 function installPromptEditorSoon(node) {
     if (!node || node.__h3PromptInstallPending || node.__h3PromptInstallRetry || node.__h3Editor) return;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -5430,8 +5438,10 @@ function syncEmbeddedMediaResponsiveLayout(node, { resetBaseline = false } = {})
     const layout = EMBEDDED_MEDIA_LAYOUT;
     const modeKey = reference ? "reference" : "image";
     const minGalleryHeight = embeddedGalleryHeight(reference, layout.imageSlotMin);
-    const hostMinHeight = minGalleryHeight + layout.promptMin + layout.galleryPromptGap;
+    const padding = layout.workbenchPaddingTop + layout.promptBottomGap;
+    const hostMinHeight = minGalleryHeight + layout.promptMin + layout.galleryPromptGap + padding;
     const nodeHeight = Number(node?.size?.[1]);
+    const modernNodes = isVueNodesMode();
     let state = node.__h3EmbeddedResponsiveLayout;
     if (resetBaseline || !state || state.mode !== modeKey) {
         state = {
@@ -5441,13 +5451,16 @@ function syncEmbeddedMediaResponsiveLayout(node, { resetBaseline = false } = {})
         };
         node.__h3EmbeddedResponsiveLayout = state;
     }
-    // ComfyUI's computedHeight is the actual post-layout height of the one
-    // workbench host; native rows are not part of that value's node delta.
+    // Vue Nodes owns DOM-widget sizing.  Feeding its computedHeight back into
+    // our flex layout causes a loop: ComfyUI expands the host, we treat that
+    // expansion as user space and enlarge it again.  In modern mode, retain
+    // the initial host measurement as a baseline and react only to the node
+    // height delta produced by a real user resize.
     const allocatedHeight = Number(galleryWidget.computedHeight);
     const delta = Number.isFinite(nodeHeight) && nodeHeight > 0 ? nodeHeight - state.nodeHeight : 0;
     const hostHeight = Math.max(
         hostMinHeight,
-        Number.isFinite(allocatedHeight) && allocatedHeight > 0
+        !modernNodes && Number.isFinite(allocatedHeight) && allocatedHeight > 0
             ? allocatedHeight
             : state.hostHeight + delta,
     );
@@ -5455,21 +5468,26 @@ function syncEmbeddedMediaResponsiveLayout(node, { resetBaseline = false } = {})
     const maximumScale = layout.imageSlotMax / layout.imageSlotBase;
     const galleryVariableHeight = (reference ? 3 + layout.videoToImageRatio : 3) * layout.imageSlotBase;
     const galleryChromeHeight = reference ? layout.referenceModeChrome : layout.imageModeChrome;
-    const rawScale = (hostHeight - layout.galleryPromptGap - galleryChromeHeight) / (galleryVariableHeight + layout.promptBase);
+    const rawScale = (hostHeight - padding - layout.galleryPromptGap - galleryChromeHeight - layout.widgetRowOffset) / (galleryVariableHeight + layout.promptBase);
     const proportionalScale = Math.max(minimumScale, Math.min(maximumScale, rawScale));
     const imageSlotHeight = layout.imageSlotBase * proportionalScale;
     const galleryHeight = embeddedGalleryHeight(reference, imageSlotHeight);
     const previewAtMax = proportionalScale >= maximumScale;
-    const promptHeight = previewAtMax
-        ? Math.max(layout.promptMin, hostHeight - galleryHeight - layout.galleryPromptGap)
-        : Math.max(layout.promptMin, layout.promptBase * proportionalScale);
+    // Reserve the footer inside the allocated host, not as an external margin.
+    // Use the exact remainder after rounded preview rows to avoid overflow.
+    const promptHeight = Math.max(layout.promptMin, hostHeight - galleryHeight - layout.galleryPromptGap - padding);
+    const videoSlotHeight = Math.round(imageSlotHeight * layout.videoToImageRatio);
     gallery.style.setProperty("--fh-h3-image-slot-height", `${Math.round(imageSlotHeight)}px`);
-    gallery.style.setProperty("--fh-h3-video-slot-height", `${Math.round(imageSlotHeight * layout.videoToImageRatio)}px`);
+    gallery.style.setProperty("--fh-h3-video-slot-height", `${videoSlotHeight}px`);
     workbench.style.setProperty("--fh-h3-gallery-height", `${Math.round(galleryHeight)}px`);
     workbench.style.setProperty("--fh-h3-prompt-height", `${Math.round(promptHeight)}px`);
     workbench.classList.toggle("is-preview-capped", previewAtMax);
     node.__h3EmbeddedPreviewAtMax = previewAtMax;
-    node.__h3EmbeddedResponsiveMetrics = { galleryHeight, promptHeight, hostHeight };
+    node.__h3EmbeddedResponsiveMetrics = {
+        galleryHeight,
+        promptHeight,
+        hostHeight,
+    };
     node._widgetSlotsDirty = true;
     return true;
 }
@@ -5596,7 +5614,8 @@ function ensureEmbeddedMediaGallery(node) {
         margin: 0,
         getMinHeight: () => embeddedGalleryHeight(
             isReferenceMode(node), EMBEDDED_MEDIA_LAYOUT.imageSlotMin,
-        ) + EMBEDDED_MEDIA_LAYOUT.promptMin + EMBEDDED_MEDIA_LAYOUT.galleryPromptGap,
+        ) + EMBEDDED_MEDIA_LAYOUT.promptMin + EMBEDDED_MEDIA_LAYOUT.galleryPromptGap
+            + EMBEDDED_MEDIA_LAYOUT.workbenchPaddingTop + EMBEDDED_MEDIA_LAYOUT.promptBottomGap,
         afterResize: () => {
             syncEmbeddedMediaResponsiveLayout(node);
             applyNativeEditorTheme(node.__h3EditorWrap);
@@ -5631,6 +5650,8 @@ function setupMainNodeFrontend(node) {
     pruneTransportInputsFromNode(node, { force: true });
     hideSerializedTransportWidgets(node);
     localizeNodeInstance(node);
+    const low = getWidget(node, "low_vram_streamed_attention");
+    if (low) low.label = "完整低显存分块（实验）";
     bindPromptOptimizerWidgetCallbacks(node);
     syncModeWidgets(node);
     ensureEmbeddedMediaGallery(node);
@@ -5973,7 +5994,7 @@ function install() {
     const style = document.createElement("style");
     style.textContent = `
       .fh-h3-embedded-workbench {
-        display: flex; flex-direction: column; gap: 8px; width: calc(100% - 20px); max-width: calc(100% - 20px); height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0 10px; padding: 2px 0; overflow: hidden;
+        display: flex; flex-direction: column; gap: 8px; width: calc(100% - 20px); max-width: calc(100% - 20px); height: 100%; min-width: 0; min-height: 0; box-sizing: border-box; margin: 0 10px; padding: ${EMBEDDED_MEDIA_LAYOUT.workbenchPaddingTop}px 0 ${EMBEDDED_MEDIA_LAYOUT.promptBottomGap}px; overflow: hidden;
       }
       .fh-h3-media-gallery {
         display: grid; gap: 8px; width: 100%; height: var(--fh-h3-gallery-height, auto); flex: 0 0 var(--fh-h3-gallery-height, auto); min-width: 0; box-sizing: border-box; margin: 0; padding: 0;

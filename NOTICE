@@ -22,3 +22,5 @@ documentation/workflow changes.
 
 When redistributing this project or substantial portions of it, retain the
 LICENSE and this NOTICE file.
+
+Low-VRAM streaming includes GPL-3.0-or-later code from MATLOWAI/ComfyUI-MAINodes (https://github.com/matlowai/ComfyUI-MAINodes), adapted in third_party/mainodes_h3_streamed_blocks.py. See LICENSES/GPL-3.0-or-later-ComfyUI-MAINodes.txt.

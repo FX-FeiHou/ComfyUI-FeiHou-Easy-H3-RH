@@ -19,6 +19,7 @@ import uuid
 import base64
 import asyncio
 import gc
+import inspect
 import json
 import mimetypes
 import tempfile
@@ -2192,6 +2193,7 @@ class MiniMaxH3PromptOptimizer:
         return (_optimizer_http_json(str(api_url), str(api_key), str(model), str(api_format or "openai"), system, str(prompt or "")),)
 
 
+
 def _register_prompt_optimizer_route() -> bool:
     try:
         from aiohttp import web
@@ -2201,6 +2203,7 @@ def _register_prompt_optimizer_route() -> bool:
     routes = getattr(getattr(PromptServer, "instance", None), "routes", None)
     if routes is None or getattr(_register_prompt_optimizer_route, "_registered", False):
         return bool(getattr(_register_prompt_optimizer_route, "_registered", False))
+
 
     # Keep RH endpoints distinct from the standard edition. Both packages may
     # be installed in one ComfyUI instance; sharing a route made the RH prompt
@@ -2395,6 +2398,8 @@ class MiniMaxH3Bundle:
     second_fl2va_model_name: str = NONE_MODEL
     second_ref2va_model_name: str = NONE_MODEL
     second_sampling_use_lora: bool = True
+    second_lora_stack: tuple[tuple[str, float], ...] = ()
+    remix_loader: bool = False
 
     def __post_init__(self) -> None:
         self._model = None
@@ -2451,14 +2456,15 @@ class MiniMaxH3Bundle:
         self._loaded_loras[path] = (*signature, lora)
         return lora
 
-    def _apply_loras(self, model):
-        if not self.lora_stack:
+    def _apply_loras(self, model, lora_stack: tuple[tuple[str, float], ...] | None = None):
+        stack = self.lora_stack if lora_stack is None else lora_stack
+        if not stack:
             return model
         loader = getattr(comfy.sd, "load_bypass_lora_for_models", None)
         if not callable(loader):
-            raise RuntimeError("当前 ComfyUI 不支持旁路 LoRA 加载，请更新 ComfyUI。")
+            raise RuntimeError("This ComfyUI version does not support bypass LoRA loading. Update ComfyUI and try again.")
         result = model
-        for name, strength in self.lora_stack:
+        for name, strength in stack:
             lora = self._load_lora(name)
             result, _clip = loader(result, None, lora, float(strength), 0.0)
         return result
@@ -2546,7 +2552,7 @@ class MiniMaxH3Bundle:
         model_name = self.second_ref2va_model_name if kind == "ref2va" else self.second_fl2va_model_name
         if _is_none_model(model_name):
             return None
-        cache_key = ("file", model_name)
+        cache_key = ("file", model_name, self.second_lora_stack if self.remix_loader else self.second_sampling_use_lora)
         with self._lock:
             if self._second_model is not None and self._second_model_cache_key == cache_key:
                 model = self._second_model
@@ -2561,7 +2567,7 @@ class MiniMaxH3Bundle:
                     base_model = _load_gguf_unet(model_name)
                 else:
                     base_model, = nodes.UNETLoader().load_unet(model_name, "default")
-                model = self._apply_loras(base_model) if self.second_sampling_use_lora else base_model
+                model = self._apply_loras(base_model, self.second_lora_stack) if self.remix_loader else (self._apply_loras(base_model) if self.second_sampling_use_lora else base_model)
                 self._second_model = model
                 self._second_model_kind = kind
                 self._second_model_name = model_name
@@ -2641,6 +2647,159 @@ def _release_auxiliary_models_for_sampling(bundle: MiniMaxH3Bundle, phase: str =
             _LOGGER.debug("Easy H3: unable to release %s before sampling: %s", label, exc)
     if released:
         _LOGGER.info("Easy H3: released %s from VRAM before %s", ", ".join(released), phase)
+
+
+_FEIHOU_H3_CACHE_RELEASE_WRAPPER_KEY = "feihou_easy_h3_rh_cache_release"
+
+
+def _release_sampling_cache_afterwards(executor, *args, **kwargs):
+    """Run one allocator cleanup after a sampler returns.
+
+    This intentionally uses ComfyUI's OUTER_SAMPLE wrapper rather than a
+    per-denoise-step hook.  Emptying the allocator during every denoise step
+    causes needless synchronisation and makes H3 substantially slower.
+    """
+    result = executor(*args, **kwargs)
+    gc.collect()
+    comfy.model_management.soft_empty_cache()
+    logging.info("Easy H3: released unused CUDA cache after sampling")
+    return result
+
+
+def _low_vram_patch_owner(value: Any) -> str:
+    """Best-effort owner label for a model patch without importing other packs."""
+    try:
+        code = getattr(value, "__code__", None) or getattr(getattr(value, "__call__", None), "__code__", None)
+        path = str(code.co_filename if code is not None else inspect.getfile(value)).replace("\\", "/")
+    except Exception:
+        path = str(getattr(value, "__module__", type(value).__module__) or "?").replace("\\", "/")
+    if "/custom_nodes/" in path:
+        return path.split("/custom_nodes/", 1)[1].split("/", 1)[0]
+    if "/comfy/" in path or "/comfy_extras/" in path:
+        return "ComfyUI core"
+    return path
+
+
+def _low_vram_block_conflict_messages(model: Any) -> list[str]:
+    """Report competing H3 model patches; never mutate or reject the model."""
+    messages: list[str] = []
+    try:
+        transformer_options = getattr(model, "model_options", {}).get("transformer_options", {})
+        replacements = transformer_options.get("patches_replace", {}).get("dit", {})
+        if isinstance(replacements, Mapping) and replacements:
+            owners: dict[str, list[Any]] = {}
+            for key, patch in replacements.items():
+                owners.setdefault(_low_vram_patch_owner(patch), []).append(key)
+            for owner, keys in owners.items():
+                sample = keys[0]
+                messages.append(
+                    f"已有 DiT block 替换：{owner}（{len(keys)} 个 block，例如 {sample}）。"
+                    "完整低显存分块会替换同一 block；请勿把两个 block 实现叠加使用。"
+                )
+        object_patches = getattr(model, "object_patches", {})
+        if isinstance(object_patches, Mapping):
+            for name, patch in object_patches.items():
+                lower_name = str(name).lower()
+                if "_forward" in lower_name or "final_layer" in lower_name:
+                    messages.append(
+                        f"已有 H3 对象补丁：{name} <- {_low_vram_patch_owner(patch)}。"
+                        "完整低显存分块也会修改 H3 _forward / final layer，请检查兼容性。"
+                    )
+        for name, value in transformer_options.items():
+            if name in {"patches_replace", "patches"}:
+                continue
+            if callable(value) and any(token in str(name).lower() for token in ("attention", "h3", "minimax")):
+                messages.append(
+                    f"已有 transformer 选项：{name} <- {_low_vram_patch_owner(value)}。"
+                    "将保留该选项，但请留意它与完整低显存分块的组合效果。"
+                )
+    except Exception as exc:
+        messages.append(f"无法完整读取现有模型补丁：{type(exc).__name__}: {exc}")
+    return messages
+
+
+def _log_low_vram_block_diagnostics(model: Any) -> None:
+    messages = _low_vram_block_conflict_messages(model)
+    if not messages:
+        logging.info("Easy H3 low-VRAM diagnostics: no existing H3 block or output-head patches detected")
+        return
+    logging.warning("Easy H3 low-VRAM diagnostics: potential patch interaction detected (diagnostic only; generation continues)")
+    for message in messages:
+        logging.warning("Easy H3 low-VRAM diagnostics: %s", message)
+
+
+def _apply_complete_streamed_blocks(model):
+    """Apply the vendored MAINodes H3 block-streaming implementation.
+
+    The module streams QKV construction, attention, MLP/SwiGLU and the H3
+    output head.  It is GPL-3.0-or-later derivative code; see NOTICE and
+    ``third_party/mainodes_h3_streamed_blocks.py`` for attribution.
+    """
+    try:
+        from .third_party.mainodes_h3_streamed_blocks import H3StreamedBlocks
+    except Exception as exc:
+        logging.warning("Easy H3: complete low-VRAM block module is unavailable: %s", exc)
+        return model
+    try:
+        _log_low_vram_block_diagnostics(model)
+        # Exact bf16 K/V is deliberately the default.  Approximate K/V modes
+        # remain out of Easy H3 until they have independent quality coverage.
+        return H3StreamedBlocks().patch(
+            model,
+            q_chunk=16384,
+            kv_chunk=16384,
+            mlp_chunk=16384,
+            min_tokens=32768,
+            kv_block=0,
+            final_layer_chunk=16384,
+            final_layer_gemm="exact (whole GEMM, one fp32 buffer)",
+            kv_store="bf16 (exact)",
+            trim_forward=True,
+            self_check=False,
+        )[0]
+    except Exception as exc:
+        logging.warning("Easy H3: unable to enable complete low-VRAM block streaming: %s", exc)
+        return model
+
+
+def _clone_h3_model_with_memory_features(model, *, force_offload: bool, streamed_attention: bool):
+    """Attach optional per-workflow H3 memory features to a model clone."""
+    if not force_offload and not streamed_attention:
+        return model
+    try:
+        patched = model.clone()
+    except Exception as exc:
+        logging.warning("Easy H3: unable to clone model for memory features: %s", exc)
+        return model
+    if streamed_attention:
+        patched = _apply_complete_streamed_blocks(patched)
+
+    if force_offload:
+        try:
+            import comfy.patcher_extension
+            patched.remove_wrappers_with_key(
+                comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
+                _FEIHOU_H3_CACHE_RELEASE_WRAPPER_KEY,
+            )
+            patched.add_wrapper_with_key(
+                comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
+                _FEIHOU_H3_CACHE_RELEASE_WRAPPER_KEY,
+                _release_sampling_cache_afterwards,
+            )
+        except Exception as exc:
+            logging.warning("Easy H3: unable to install post-sampling cache cleanup: %s", exc)
+
+    # The optional second-pass hand-off stores these markers on the ModelPatcher
+    # itself. Preserve them after the streamed-block implementation creates
+    # its own clone, otherwise the second sampler would miss first-pass cleanup.
+    for marker in (
+        "_feihou_h3_unload_before_second_sampling",
+        "_feihou_h3_release_auxiliary_before_second_sampling",
+        "_feihou_h3_release_lora_cache_before_second_sampling",
+    ):
+        if hasattr(model, marker):
+            setattr(patched, marker, getattr(model, marker))
+    return patched
 
 
 @dataclass(frozen=True)
@@ -2810,6 +2969,76 @@ class FeiHouEasyH3Loader:
             second_fl2va_model_name=second_fl2va_model,
             second_ref2va_model_name=second_ref2va_model,
             second_sampling_use_lora=_as_bool(second_sampling_use_lora),
+        ),)
+
+
+class FeiHouEasyH3RemixLoader:
+    """Loader for Remix checkpoints that serve both FL2VA and REF2VA paths.
+
+    Remix weights do not need to be split into mode-specific selectors.  This
+    keeps the first and second sampling LoRA stacks independent: an unlinked
+    second-pass stack simply means that the second pass uses the base model.
+    """
+
+    CATEGORY = "FeiHou Easy H3"
+    FUNCTION = "load"
+    RETURN_TYPES = ("MINIMAX_H3_BUNDLE",)
+    RETURN_NAMES = ("h3_bundle",)
+    DESCRIPTION = "Load a MiniMax H3 Remix transformer shared by FL2VA and REF2VA, with optional independent first/second-pass LoRA stacks."
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "remix_model": _rh_unet_model_combo(),
+                "text_encoder": (_clip_choices(),),
+                "video_vae": (_vae_choices(("minimax_h3_video_vae",), "minimax_h3_video_vae_fp16.safetensors"),),
+                "audio_vae": (_vae_choices(("minimax_h3_audio_vae",), "minimax_h3_audio_vae_fp32.safetensors"),),
+                "second_sampling_model": ([NONE_MODEL], {"default": NONE_MODEL, "rh_resource_model_picker": "UNET"}),
+            },
+            "optional": {
+                "first_pass_lora_stack": (LORA_STACK_TYPE,),
+                "second_pass_lora_stack": (LORA_STACK_TYPE,),
+            },
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        base = "|".join(str(kwargs.get(key, "")) for key in ("remix_model", "text_encoder", "video_vae", "audio_vae", "second_sampling_model"))
+        stacks = (
+            _normalize_lora_stack(kwargs.get("first_pass_lora_stack")),
+            _normalize_lora_stack(kwargs.get("second_pass_lora_stack")),
+        )
+        return base + "|" + json.dumps(stacks, ensure_ascii=False)
+
+    def load(self, remix_model, text_encoder, video_vae, audio_vae, second_sampling_model=NONE_MODEL, first_pass_lora_stack=None, second_pass_lora_stack=None):
+        if _is_none_model(remix_model):
+            raise ValueError("Select a Remix main model")
+        clip = _load_text_encoder(text_encoder)
+        video_vae_obj, = nodes.VAELoader().load_vae(video_vae)
+        audio_vae_obj, = nodes.VAELoader().load_vae(audio_vae)
+        first_stack = _normalize_lora_stack(first_pass_lora_stack)
+        second_stack = _normalize_lora_stack(second_pass_lora_stack)
+        return (MiniMaxH3Bundle(
+            fl2va_model_name=remix_model,
+            ref2va_model_name=remix_model,
+            clip_name=text_encoder,
+            video_vae_name=video_vae,
+            audio_vae_name=audio_vae,
+            clip=clip,
+            video_vae=video_vae_obj,
+            audio_vae=audio_vae_obj,
+            lora_stack=first_stack,
+            second_sampling_enabled=not _is_none_model(second_sampling_model),
+            second_fl2va_model_name=second_sampling_model,
+            second_ref2va_model_name=second_sampling_model,
+            second_sampling_use_lora=bool(second_stack),
+            second_lora_stack=second_stack,
+            remix_loader=True,
         ),)
 
 
@@ -3298,6 +3527,7 @@ class FeiHouEasyH3:
                 "prompt_optimizer_model": _rh_llm_model_combo(),
                 "prompt_optimizer_scene_guide": (prompt_schemes, {"default": default_prompt_scheme}),
                 "force_offload": ("BOOLEAN", {"default": False}),
+                "low_vram_streamed_attention": ("BOOLEAN", {"default": False}),
             },
             "optional": optional,
             "hidden": {
@@ -3366,7 +3596,7 @@ class FeiHouEasyH3:
         return images[0], images[1]
 
     @classmethod
-    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, audio_duration_auto=False, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", force_offload=False, prompt_optimizer_applied=False, embedded_media_json="", extra_pnginfo=None, unique_id=None, api_config=None, **kwargs):
+    def generate(cls, h3_bundle, mode, prompt, resolution, aspect_ratio, width, height, seconds, advanced, fps, keyframe_role, ref_image_size, reference_mention_mode, audio_duration_auto=False, prompt_optimizer_enabled=False, prompt_optimizer_api_format="auto", prompt_optimizer_api_url="", prompt_optimizer_api_key="", prompt_optimizer_model="", prompt_optimizer_scene_guide="none", force_offload=False, prompt_optimizer_applied=False, embedded_media_json="", extra_pnginfo=None, unique_id=None, api_config=None, low_vram_streamed_attention=False, **kwargs):
         if not isinstance(h3_bundle, MiniMaxH3Bundle):
             raise ValueError("Connect a FeiHou Easy H3 Loader bundle")
         # ``advanced`` may itself come from an external input. Keep the backend
@@ -3471,6 +3701,9 @@ class FeiHouEasyH3:
             else:
                 conditioning, latent = _empty_image_conditioning(h3_bundle, prompt, width, height, length, first_frame, last_frame)
                 prompt_preview = str(prompt or "")
+        model = _clone_h3_model_with_memory_features(model,
+            force_offload=h3_bundle.force_offload_enabled,
+            streamed_attention=_as_bool(advanced) and _as_bool(low_vram_streamed_attention))
         model_name = getattr(h3_bundle, "_model_name", "") or ""
         _LOGGER.info(
             "FeiHouEasyH3 using model_kind=%s model_name=%s refs=%s",
@@ -3484,6 +3717,9 @@ class FeiHouEasyH3:
             # Keep the existing first->second transformer release marker: it
             # is installed only when the first model is already available.
             second_sampling_model = h3_bundle.second_sampling_model_for(second_kind)
+            second_sampling_model = _clone_h3_model_with_memory_features(second_sampling_model,
+                force_offload=h3_bundle.force_offload_enabled,
+                streamed_attention=_as_bool(advanced) and _as_bool(low_vram_streamed_attention))
         context = MiniMaxH3Context(
             conditioning=conditioning,
             latent=latent,

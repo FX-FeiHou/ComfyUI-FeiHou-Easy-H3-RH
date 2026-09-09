@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.3
+
+- Fixes complete streamed-block output-head compatibility with the updated ComfyUI 0.35 H3 calling convention, retaining native fallbacks.
+- Adds optional streamed-block diagnostics and post-sampling cache cleanup, plus the RH Remix Loader with independent first/second-pass LoRA stacks.
+- Improves modern-node sizing and prompt footer spacing while preserving frontend isolation and existing RH input ordering.
+- Excludes the standard-only Production Pack Loader and development tests from the RH package.
+- Preserves the RunningHub 260907 LLM API, authentication/billing checks and platform resource selectors. Standard-only sparse/text-only-reference experiments are not included.
+- Validation: original RunningHub ZIP baseline checks, CPU wrapper tests and frontend checks passed. Live RunningHub generation was not performed locally.
+
 ## v1.4.2
 
 - Integrates the RunningHub 260907 LLM API adaptation, preserving platform model selection, RH_OPENAPI_CONFIG, authentication and balance prechecks.
