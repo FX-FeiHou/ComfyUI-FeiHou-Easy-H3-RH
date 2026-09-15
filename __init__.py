@@ -1,4 +1,5 @@
 from .nodes import (
+    FeiHouEasyH3Resolution,
     FeiHouEasyH3,
     FeiHouEasyH3Loader,
     FeiHouEasyH3RemixLoader,
@@ -10,6 +11,7 @@ from .nodes import (
 )
 
 NODE_CLASS_MAPPINGS = {
+    "FeiHouEasyH3RHResolution": FeiHouEasyH3Resolution,
     "FeiHouEasyH3RHRemixLoader": FeiHouEasyH3RemixLoader,
     # RH has distinct Comfy class IDs so it can coexist with the standard edition.
     "FeiHouEasyH3RHLoraStack": FeiHouEasyH3LoraStack,
@@ -22,8 +24,9 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "FeiHouEasyH3RHResolution": "FeiHou Easy H3 Resolution · RH",
     "FeiHouEasyH3RHRemixLoader": "FeiHou Easy H3 Remix加载器 · RH",
-    "FeiHouEasyH3RHLoraStack": "加载LoRA（旁路，仅模型）（用于调试）· RH",
+    "FeiHouEasyH3RHLoraStack": "加载LoRA（仅模型）· RH",
     "FeiHouEasyH3RHLoader": "FeiHou Easy H3 加载器 · RH",
     "FeiHouEasyH3RHModelAdapter": "FeiHou Easy H3 模型中转 · RH",
     "FeiHouEasyH3RH": "ComfyUI-FeiHou-Easy-H3-RH",

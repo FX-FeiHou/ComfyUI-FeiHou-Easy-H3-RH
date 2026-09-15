@@ -102,7 +102,7 @@ const TEXT = {
     aspectRatio: ZH_BROWSER ? "\u5bbd\u9ad8\u6bd4" : "Aspect ratio",
     width: ZH_BROWSER ? "\u5bbd\u5ea6" : "Width",
     height: ZH_BROWSER ? "\u9ad8\u5ea6" : "Height",
-    audioDurationAuto: ZH_BROWSER ? "\u6570\u5b57\u4eba/MV \u81ea\u52a8\u65f6\u957f" : "Digital human/MV auto duration",
+    audioDurationAuto: ZH_BROWSER ? "自动时长对齐" : "Automatic duration alignment",
     seconds: ZH_BROWSER ? "\u79d2\u6570" : "Seconds",
     advanced: ZH_BROWSER ? "\u9ad8\u7ea7\u9009\u9879" : "Advanced options",
     forceOffload: ZH_BROWSER ? "\u5f3a\u5236\u5378\u8f7d" : "Force offload",
@@ -151,7 +151,7 @@ const TEXT = {
     embeddedAudios: ZH_BROWSER ? "\u53c2\u8003\u97f3\u9891 \u00b7 3" : "Reference audio \u00b7 3",
     audioTrim: ZH_BROWSER ? "\u65f6\u95f4\u622a\u53d6" : "Trim range",
     audioTrimPlaceholder: "00:00:000",
-    audioPreviewPlay: ZH_BROWSER ? "\u64ad\u653e\u5f53\u524d\u88c1\u526a\u97f3\u9891" : "Play trimmed audio",
+    audioPreviewPlay: ZH_BROWSER ? "播放当前截取片段" : "Play trimmed media",
     audioPreviewStop: ZH_BROWSER ? "\u505c\u6b62\u64ad\u653e" : "Stop playback",
     audioPreviewMissing: ZH_BROWSER ? "\u8bf7\u5148\u4e0a\u4f20\u5bf9\u5e94\u7684\u53c2\u8003\u97f3\u9891" : "Upload the reference audio first",
     embeddedPick: ZH_BROWSER ? "\u70b9\u51fb\u6216\u62d6\u5165\u6587\u4ef6" : "Click or drop a file",
@@ -160,6 +160,11 @@ const TEXT = {
     embeddedUploading: ZH_BROWSER ? "\u4e0a\u4f20\u4e2d\u2026" : "Uploading\u2026",
 };
 const OPTION_DEFS = {
+    audio_duration_auto: {
+        off: ZH_BROWSER ? "关闭" : "Off",
+        audio: ZH_BROWSER ? "参考音频对齐" : "Reference audio",
+        video: ZH_BROWSER ? "参考视频对齐" : "Reference video",
+    },
     mode: {
         [MODE_IMAGE]: ZH_BROWSER ? "\u56fe\u751f\u6216\u9996\u5c3e\u5e27" : "I2V or First/Last Frame",
         [MODE_REFERENCE]: ZH_BROWSER ? "\u53c2\u8003\u751f\u89c6\u9891" : "Reference-to-video",
@@ -319,6 +324,7 @@ function isDurationCrop(node) {
 }
 
 function canonicalOption(name, value) {
+    if (name === "audio_duration_auto") return durationAlignment(value);
     const raw = String(value ?? "");
     const alias = OPTION_ALIASES[name]?.[raw];
     if (alias !== undefined) return alias;
@@ -561,7 +567,7 @@ const EMBEDDED_MEDIA_LAYOUT = Object.freeze({
     // layout offset. Keep it separate from the actual media content height.
     widgetRowOffset: 4,
     imageModeChrome: 32,
-    referenceModeChrome: 170,
+    referenceModeChrome: 198,
 });
 const EMBEDDED_MEDIA_ACCEPT = Object.freeze({
     image: "image/png,image/jpeg,image/webp,image/gif,image/bmp",
@@ -655,7 +661,7 @@ function ensureEmbeddedMedia(node) {
             filename,
             subfolder: String(item?.subfolder || ""),
             storage: String(item?.storage || item?.type_name || "input"),
-            audio_trim: mediaType === "audio" ? normalizeAudioTrimRange(item?.audio_trim || item?.trim_range || AUDIO_TRIM_DEFAULT) : "",
+            audio_trim: ["audio", "video"].includes(mediaType) ? normalizeAudioTrimRange(item?.audio_trim || item?.trim_range || AUDIO_TRIM_DEFAULT) : "",
         });
     }
     normalized.sort((left, right) => (
@@ -719,7 +725,7 @@ function applyEmbeddedMediaFromSerialized(node, info) {
                     filename,
                     subfolder: "",
                     storage: "input",
-                    audio_trim: mediaType === "audio" ? normalizeAudioTrimRange(values[`media_trim_${index}`] || AUDIO_TRIM_DEFAULT) : "",
+                    audio_trim: ["audio", "video"].includes(mediaType) ? normalizeAudioTrimRange(values[`media_trim_${index}`] || AUDIO_TRIM_DEFAULT) : "",
                 });
             }
         }
@@ -759,6 +765,7 @@ function embeddedMediaFilename(item) {
 }
 
 function setEmbeddedMedia(node, mediaType, ordinal, value) {
+    stopEmbeddedAudioPreview(node);
     const key = embeddedMediaKey(mediaType, ordinal);
     const current = ensureEmbeddedMedia(node);
     const previous = current.find((item) => embeddedMediaKey(item.media_type, item.ordinal) === key);
@@ -770,7 +777,7 @@ function setEmbeddedMedia(node, mediaType, ordinal, value) {
             filename: String(value.filename),
             subfolder: String(value.subfolder || ""),
             storage: String(value.storage || "input"),
-            audio_trim: mediaType === "audio"
+            audio_trim: ["audio", "video"].includes(mediaType)
                 ? normalizeAudioTrimRange(value.audio_trim || previous?.audio_trim || AUDIO_TRIM_DEFAULT)
                 : "",
         });
@@ -785,8 +792,8 @@ function setEmbeddedMedia(node, mediaType, ordinal, value) {
     app.graph?.change?.();
 }
 
-function audioTrimForSlot(node, ordinal) {
-    const record = ensureEmbeddedMedia(node).find((item) => item.media_type === "audio" && item.ordinal === ordinal);
+function audioTrimForSlot(node, ordinal, mediaType = "audio") {
+    const record = ensureEmbeddedMedia(node).find((item) => item.media_type === mediaType && item.ordinal === ordinal);
     return record ? normalizeAudioTrimRange(record.audio_trim) : AUDIO_TRIM_DEFAULT;
 }
 
@@ -796,10 +803,11 @@ function audioTrimParts(value) {
     return { start, end };
 }
 
-function setEmbeddedAudioTrim(node, ordinal, value) {
+function setEmbeddedAudioTrim(node, ordinal, value, mediaType = "audio") {
+    stopEmbeddedAudioPreview(node);
     const normalized = normalizeAudioTrimRange(value);
     const records = ensureEmbeddedMedia(node);
-    const index = records.findIndex((item) => item.media_type === "audio" && item.ordinal === ordinal);
+    const index = records.findIndex((item) => item.media_type === mediaType && item.ordinal === ordinal);
     if (index < 0) return normalized;
     records[index] = { ...records[index], audio_trim: normalized };
     node.properties[EMBEDDED_MEDIA_PROP] = records;
@@ -1880,7 +1888,7 @@ function patchGraphToPrompt() {
                 const path = link.subfolder ? `${link.subfolder}/${link.filename}` : link.filename;
                 promptNode.inputs[`media_${index + 1}`] = path;
                 promptNode.inputs[`media_type_${index + 1}`] = String(link.media_type || "image");
-                promptNode.inputs[`media_trim_${index + 1}`] = link.media_type === "audio" ? normalizeAudioTrimRange(link.audio_trim) : "";
+                promptNode.inputs[`media_trim_${index + 1}`] = ["audio", "video"].includes(link.media_type) ? normalizeAudioTrimRange(link.audio_trim) : "";
             });
             const promptInput = promptInputSlot(node);
             const promptLinkId = promptInput?.link;
@@ -1921,6 +1929,7 @@ function patchGraphToPrompt() {
                 promptNode.inputs[name] = value;
             };
             setWidgetInput("mode", canonicalOption("mode", getWidgetValue(node, "mode", MODE_IMAGE)));
+            setWidgetInput("audio_duration_auto", durationAlignment(getWidgetValue(node, "audio_duration_auto", "off")));
             setWidgetInput("resolution", canonicalOption("resolution", getWidgetValue(node, "resolution", "480P")));
             setWidgetInput("aspect_ratio", canonicalOption("aspect_ratio", getWidgetValue(node, "aspect_ratio", "16:9")));
             setWidgetInput("width", Number(getWidgetValue(node, "width", 1344)));
@@ -3666,6 +3675,8 @@ function syncModeWidgets(node, { adjustHeight = true } = {}) {
         setConditionalWidgetVisible(node, getWidget(node, "ref_image_size"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "reference_mention_mode"), advanced && isReferenceMode(node), { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "force_offload"), advanced, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "low_vram_streamed_attention"), advanced, { adjustHeight }),
+        setConditionalWidgetVisible(node, getWidget(node, "reference_text_only"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_enabled"), advanced, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_format"), false, { adjustHeight }),
         setConditionalWidgetVisible(node, getWidget(node, "prompt_optimizer_api_url"), false, { adjustHeight }),
@@ -3685,10 +3696,17 @@ function syncModeWidgets(node, { adjustHeight = true } = {}) {
     return changed;
 }
 
+function durationAlignment(value) {
+    if (value === true || ["true", "1", "audio", "参考音频对齐", "Reference audio"].includes(String(value))) return "audio";
+    if (["video", "参考视频对齐", "Reference video"].includes(String(value))) return "video";
+    return "off";
+}
+
 function syncAudioDurationAuto(node) {
     const secondsWidget = getWidget(node, "seconds");
     if (!secondsWidget) return false;
-    const enabled = asBoolean(getWidgetValue(node, "audio_duration_auto", false));
+    const alignment = durationAlignment(getWidgetValue(node, "audio_duration_auto", "off"));
+    const enabled = alignment !== "off";
     const wasDisabled = Boolean(secondsWidget.__h3AudioDurationAutoDisabled);
     secondsWidget.__h3AudioDurationAutoDisabled = enabled;
     secondsWidget.disabled = enabled;
@@ -3702,9 +3720,33 @@ function syncAudioDurationAuto(node) {
     }
     let valueChanged = false;
     if (enabled) {
-        const [startRaw, endRaw] = normalizeAudioTrimRange(audioTrimForSlot(node, 1)).split("-", 2);
+        const [startRaw, endRaw] = normalizeAudioTrimRange(audioTrimForSlot(node, 1, alignment)).split("-", 2);
         const start = parseAudioTrimPart(startRaw);
         const end = parseAudioTrimPart(endRaw);
+        const record = ensureEmbeddedMedia(node).find(item => item.media_type === alignment && item.ordinal === 1);
+        if (record) {
+            const url = embeddedMediaViewUrl(record);
+            const cache = node.__h3MediaDurationCache ||= new Map();
+            if (!cache.has(url)) {
+                cache.set(url, null);
+                const probe = document.createElement(alignment === "video" ? "video" : "audio");
+                const release = () => { probe.removeAttribute("src"); probe.load(); };
+                probe.addEventListener("loadedmetadata", () => {
+                    cache.set(url, Number(probe.duration));
+                    release();
+                    syncAudioDurationAuto(node);
+                    node.setDirtyCanvas?.(true, true);
+                }, { once: true });
+                probe.addEventListener("error", release, { once: true });
+                probe.preload = "metadata";
+                probe.src = url;
+                probe.load();
+            }
+            const duration = cache.get(url);
+            if (Number.isFinite(duration) && duration > 0) {
+                end.seconds = end.seconds > 0 ? Math.min(end.seconds, duration) : duration;
+            }
+        }
         if (start.valid && end.valid && end.seconds > start.seconds) {
             const next = Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, end.seconds - start.seconds));
             if (Math.abs(Number(secondsWidget.value) - next) > 1e-6) {
@@ -5136,7 +5178,7 @@ function repairConfiguredWidgetValues(node, info) {
         aspect_ratio: "16:9",
         width: 1344,
         height: 768,
-        audio_duration_auto: false,
+        audio_duration_auto: "off",
         seconds: 10,
         advanced: false,
         fps: 24,
@@ -5150,6 +5192,8 @@ function repairConfiguredWidgetValues(node, info) {
         prompt_optimizer_model: "google/gemini-3.1-flash-lite-preview",
         prompt_optimizer_scene_guide: "none",
         force_offload: false,
+        low_vram_streamed_attention: false,
+        reference_text_only: false,
     };
     const names = Object.keys(defaults);
     const values = raw;
@@ -5180,7 +5224,7 @@ function repairConfiguredWidgetValues(node, info) {
     // v1.4 adds an always-visible toggle immediately above Seconds. Old
     // workflows have a numeric Seconds value in slot 6, so insert the safe
     // disabled default only when that slot is not already the new boolean.
-    if (typeof values[6] !== "boolean") values.splice(6, 0, false);
+    if (typeof values[6] !== "boolean" && !["off", "audio", "video", "关闭", "参考音频对齐", "参考视频对齐", "Off", "Reference audio", "Reference video"].includes(values[6])) values.splice(6, 0, "off");
 
     const normalized = {
         mode: Object.prototype.hasOwnProperty.call(OPTION_DEFS.mode, canonicalOption("mode", values[0]))
@@ -5192,7 +5236,7 @@ function repairConfiguredWidgetValues(node, info) {
             ? canonicalOption("aspect_ratio", values[3]) : defaults.aspect_ratio,
         width: Number.isFinite(Number(values[4])) ? Number(values[4]) : defaults.width,
         height: Number.isFinite(Number(values[5])) ? Number(values[5]) : defaults.height,
-        audio_duration_auto: asBoolean(values[6], defaults.audio_duration_auto),
+        audio_duration_auto: durationAlignment(values[6]),
         seconds: Number.isFinite(Number(values[7]))
             ? Math.min(MAX_SECONDS, Math.max(MIN_SECONDS, Number(values[7])))
             : defaults.seconds,
@@ -5214,6 +5258,8 @@ function repairConfiguredWidgetValues(node, info) {
             : defaults.prompt_optimizer_model,
         prompt_optimizer_scene_guide: canonicalPromptGuide(values[18] ?? defaults.prompt_optimizer_scene_guide),
         force_offload: asBoolean(values[19], defaults.force_offload),
+        low_vram_streamed_attention: typeof values[20] === "boolean" ? values[20] : false,
+        reference_text_only: typeof values[21] === "boolean" ? values[21] : false,
     };
     for (const name of names) setConfiguredWidgetValue(node, name, normalized[name]);
     info.widgets_values = names.map((name) => normalized[name]);
@@ -5337,7 +5383,7 @@ function createEmbeddedMediaSection(node, mediaType, count, title) {
         grid.append(createEmbeddedMediaSlot(node, mediaType, ordinal));
     }
     section.append(heading, grid);
-    if (mediaType === "audio") section.append(createEmbeddedAudioTrimControls(node));
+    if (mediaType !== "image") section.append(createEmbeddedAudioTrimControls(node, mediaType));
     return section;
 }
 
@@ -5345,7 +5391,9 @@ function stopEmbeddedAudioPreview(node) {
     const state = node?.__h3AudioTrimPlayback;
     if (!state) return;
     node.__h3AudioTrimPlayback = null;
-    try { state.audio?.pause?.(); state.audio?.removeAttribute?.("src"); state.audio?.load?.(); } catch { }
+    clearInterval(state.timer);
+    try { state.audio.pause(); state.audio.removeAttribute("src"); state.audio.load(); } catch {}
+    if (state.mediaType === "video") state.audio.remove();
     if (state.button?.isConnected) {
         state.button.textContent = "▶";
         state.button.title = TEXT.audioPreviewPlay;
@@ -5353,56 +5401,75 @@ function stopEmbeddedAudioPreview(node) {
     }
 }
 
-function playEmbeddedAudioTrim(node, ordinal, button) {
+function playEmbeddedAudioTrim(node, ordinal, button, mediaType = "audio") {
     const active = node?.__h3AudioTrimPlayback;
-    if (active?.ordinal === ordinal) { stopEmbeddedAudioPreview(node); return; }
+    if (active?.ordinal === ordinal && active.mediaType === mediaType) {
+        stopEmbeddedAudioPreview(node); return;
+    }
     stopEmbeddedAudioPreview(node);
-    const record = ensureEmbeddedMedia(node).find((item) => item.media_type === "audio" && item.ordinal === ordinal);
-    if (!record) { notifyPromptOptimizer(TEXT.audioPreviewMissing); return; }
-    const [startRaw, endRaw] = normalizeAudioTrimRange(record.audio_trim).split("-", 2);
-    const start = parseAudioTrimPart(startRaw).seconds;
-    const requestedEnd = parseAudioTrimPart(endRaw).seconds;
-    const audio = new Audio(embeddedMediaViewUrl(record));
-    audio.preload = "metadata";
-    const state = { ordinal, audio, button, end: 0 };
+    const record = ensureEmbeddedMedia(node).find((item) => item.media_type === mediaType && item.ordinal === ordinal);
+    if (!record) return;
+    const [a, b] = normalizeAudioTrimRange(record.audio_trim).split("-", 2);
+    const start = parseAudioTrimPart(a).seconds, end = parseAudioTrimPart(b).seconds;
+    const audio = document.createElement(mediaType === "video" ? "video" : "audio");
+    if (mediaType === "video") {
+        audio.className = "fh-h3-media-preview";
+        audio.style.zIndex = "2";
+        audio.style.pointerEvents = "none";
+        audio.playsInline = true;
+        embeddedMediaCell(node, mediaType, ordinal)?.append(audio);
+    }
+    const state = { ordinal, mediaType, audio, button, end: 0, timer: null };
     node.__h3AudioTrimPlayback = state;
     button.textContent = "■";
     button.title = TEXT.audioPreviewStop;
     button.setAttribute("aria-label", TEXT.audioPreviewStop);
-    const finish = () => { if (node?.__h3AudioTrimPlayback === state) stopEmbeddedAudioPreview(node); };
+    const finish = () => { if (node.__h3AudioTrimPlayback === state) stopEmbeddedAudioPreview(node); };
     audio.addEventListener("loadedmetadata", async () => {
-        if (node?.__h3AudioTrimPlayback !== state) return;
-        const duration = Number(audio.duration);
-        if (!Number.isFinite(duration) || duration <= 0 || start >= duration) { notifyPromptOptimizer(ZH_BROWSER ? "音频时长不可用，或截取起点超出音频范围" : "Audio duration is unavailable or the trim start is out of range"); finish(); return; }
-        state.end = requestedEnd > start ? Math.min(requestedEnd, duration) : duration;
-        if (state.end <= start) { notifyPromptOptimizer(ZH_BROWSER ? "音频截取范围无效" : "Invalid audio trim range"); finish(); return; }
+        if (node.__h3AudioTrimPlayback !== state) return;
+        state.end = end > 0 ? Math.min(end, audio.duration) : audio.duration;
+        if (!Number.isFinite(state.end) || state.end <= start) {
+            notifyPromptOptimizer("截取起点超出素材时长，或范围无效 / Invalid media range");
+            finish(); return;
+        }
         audio.currentTime = start;
-        try { await audio.play(); } catch (error) { notifyPromptOptimizer(error?.message || String(error)); finish(); }
+        try {
+            await audio.play();
+            if (node.__h3AudioTrimPlayback !== state) { audio.pause(); return; }
+            state.timer = setInterval(() => { if (audio.currentTime >= state.end) finish(); }, 20);
+        } catch (error) { notifyPromptOptimizer(error.message); finish(); }
     }, { once: true });
-    audio.addEventListener("timeupdate", () => { if (node?.__h3AudioTrimPlayback === state && audio.currentTime >= state.end - 0.01) finish(); });
     audio.addEventListener("ended", finish, { once: true });
-    audio.addEventListener("error", () => { if (node?.__h3AudioTrimPlayback === state) { notifyPromptOptimizer(ZH_BROWSER ? "参考音频试听加载失败" : "Reference audio preview failed to load"); finish(); } }, { once: true });
+    audio.addEventListener("error", () => {
+        if (node.__h3AudioTrimPlayback === state) notifyPromptOptimizer("素材预览加载失败 / Media preview failed");
+        finish();
+    }, { once: true });
+    audio.preload = "metadata";
+    audio.src = embeddedMediaViewUrl(record);
+    audio.load();
 }
 
-function createEmbeddedAudioTrimControls(node) {
+function createEmbeddedAudioTrimControls(node, mediaType = "audio") {
     const wrap = document.createElement("div");
     wrap.className = "fh-h3-audio-trim-grid";
     wrap.title = TEXT.audioTrim;
-    for (let ordinal = 1; ordinal <= EMBEDDED_MEDIA_LIMITS.audio; ordinal += 1) {
+    wrap.dataset.trimMediaType = mediaType;
+    for (let ordinal = 1; ordinal <= EMBEDDED_MEDIA_LIMITS[mediaType]; ordinal += 1) {
         const control = document.createElement("div");
         control.className = "fh-h3-audio-trim-control";
         const input = document.createElement("input");
         input.type = "text";
         input.className = "fh-h3-audio-trim-input";
         input.dataset.audioTrimOrdinal = String(ordinal);
+        input.dataset.trimMediaType = mediaType;
         input.placeholder = `${TEXT.audioTrimPlaceholder}-${TEXT.audioTrimPlaceholder}`;
-        input.value = audioTrimForSlot(node, ordinal);
+        input.value = audioTrimForSlot(node, ordinal, mediaType);
         input.setAttribute("aria-label", `${TEXT.audioTrim} ${ordinal}`);
         input.title = TEXT.audioTrim;
         input.addEventListener("pointerdown", (event) => event.stopPropagation());
         input.addEventListener("keydown", (event) => event.stopPropagation());
         const commit = () => {
-            input.value = setEmbeddedAudioTrim(node, ordinal, input.value);
+            input.value = setEmbeddedAudioTrim(node, ordinal, input.value, mediaType);
         };
         input.addEventListener("change", commit);
         input.addEventListener("blur", commit);
@@ -5410,11 +5477,12 @@ function createEmbeddedAudioTrimControls(node) {
         button.type = "button";
         button.className = "fh-h3-audio-preview-button";
         button.dataset.audioPreviewOrdinal = String(ordinal);
+        button.dataset.trimMediaType = mediaType;
         button.textContent = "▶";
         button.title = TEXT.audioPreviewPlay;
         button.setAttribute("aria-label", TEXT.audioPreviewPlay);
         button.addEventListener("pointerdown", (event) => event.stopPropagation());
-        button.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); playEmbeddedAudioTrim(node, ordinal, button); });
+        button.addEventListener("click", (event) => { event.preventDefault(); event.stopPropagation(); playEmbeddedAudioTrim(node, ordinal, button, mediaType); });
         control.append(input, button);
         wrap.append(control);
     }
@@ -5496,11 +5564,12 @@ function renderEmbeddedMediaGallery(node) {
     const gallery = node?.__feihouMediaGallery;
     if (!gallery) return;
     const records = ensureEmbeddedMedia(node);
+    stopEmbeddedAudioPreview(node);
     const activePlayback = node.__h3AudioTrimPlayback;
-    if (activePlayback && !records.some((item) => item.media_type === "audio" && item.ordinal === activePlayback.ordinal)) stopEmbeddedAudioPreview(node);
+    if (activePlayback && !records.some((item) => item.media_type === activePlayback.mediaType && item.ordinal === activePlayback.ordinal)) stopEmbeddedAudioPreview(node);
     gallery.querySelectorAll?.(".fh-h3-audio-preview-button").forEach((button) => {
         const ordinal = Number(button.dataset.audioPreviewOrdinal);
-        button.disabled = !records.some((item) => item.media_type === "audio" && item.ordinal === ordinal);
+        button.disabled = !records.some((item) => item.media_type === button.dataset.trimMediaType && item.ordinal === ordinal);
     });
     const reference = isReferenceMode(node);
     gallery.dataset.feihouNodeId = String(node.id ?? "");
@@ -5571,13 +5640,11 @@ function renderEmbeddedMediaGallery(node) {
             }
         }
     }
-    for (let ordinal = 1; ordinal <= EMBEDDED_MEDIA_LIMITS.audio; ordinal += 1) {
-        const input = gallery.querySelector(`.fh-h3-audio-trim-input[data-audio-trim-ordinal="${ordinal}"]`);
-        if (!input) continue;
-        const record = records.find((item) => item.media_type === "audio" && item.ordinal === ordinal);
+    gallery.querySelectorAll(".fh-h3-audio-trim-input").forEach((input) => {
+        const record = records.find((item) => item.media_type === input.dataset.trimMediaType && item.ordinal === Number(input.dataset.audioTrimOrdinal));
         input.disabled = !reference || !record;
         input.value = normalizeAudioTrimRange(record?.audio_trim || AUDIO_TRIM_DEFAULT);
-    }
+    });
     syncEmbeddedMediaResponsiveLayout(node);
     node._widgetSlotsDirty = true;
     repairNodeLayout(node);
@@ -5652,6 +5719,14 @@ function setupMainNodeFrontend(node) {
     localizeNodeInstance(node);
     const low = getWidget(node, "low_vram_streamed_attention");
     if (low) low.label = "完整低显存分块（实验）";
+    const textOnly = getWidget(node, "reference_text_only");
+    if (textOnly) {
+        textOnly.label = isChineseComfyLocale() ? "参考素材仅走文本编码（实验）" : "Text-only reference encoding (experimental)";
+        if (low) {
+            node.widgets.splice(node.widgets.indexOf(textOnly), 1);
+            node.widgets.splice(node.widgets.indexOf(low), 0, textOnly);
+        }
+    }
     bindPromptOptimizerWidgetCallbacks(node);
     syncModeWidgets(node);
     ensureEmbeddedMediaGallery(node);
@@ -5843,6 +5918,14 @@ function installNode(nodeType, nodeData) {
         if (this.__h3Editor) syncPromptFromEditor(this, false);
         syncEmbeddedMediaJsonWidget(this);
         const result = originalSerialize?.apply(this, arguments);
+        if (info) {
+            const names = ["mode", "prompt", "resolution", "aspect_ratio", "width", "height",
+                "audio_duration_auto", "seconds", "advanced", "fps", "keyframe_role", "ref_image_size",
+                "reference_mention_mode", "prompt_optimizer_enabled", "prompt_optimizer_api_format",
+                "prompt_optimizer_api_url", "prompt_optimizer_api_key", "prompt_optimizer_model",
+                "prompt_optimizer_scene_guide", "force_offload", "low_vram_streamed_attention", "reference_text_only"];
+            info.widgets_values = names.map(name => getWidget(this, name)?.value);
+        }
         if (info && this.properties?.[PROMPT_DOC_PROP]) {
             info.properties ||= {};
             info.properties[PROMPT_DOC_PROP] = this.properties[PROMPT_DOC_PROP];
@@ -5867,6 +5950,7 @@ function installNode(nodeType, nodeData) {
 
     const originalRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function onRemovedH3Easy() {
+        stopEmbeddedAudioPreview(this);
         if (Array.isArray(this.size) && this.size.length >= 2) this.__h3EditorStableSize = [...this.size];
         clearPromptOptimizerStatusTimers(this);
         closeMentionMenu(this);
@@ -6219,6 +6303,40 @@ function install() {
     document.head.append(style);
 }
 
+function installResolutionNode(nodeType, nodeData) {
+    if (nodeData?.name !== "FeiHouEasyH3RHResolution") return;
+    const sync = (node) => {
+        const custom = isCustomResolution(node);
+        for (const name of ["width", "height"]) {
+            setConditionalWidgetVisible(node, getWidget(node, name), custom, { adjustHeight: false });
+        }
+        node.setSize?.([node.size[0], node.computeSize()[1]]);
+        node.setDirtyCanvas?.(true, true);
+    };
+    const created = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const result = created?.apply(this, arguments);
+        const node = this;
+        const resolution = getWidget(this, "resolution");
+        if (resolution) {
+            const callback = resolution.callback;
+            resolution.callback = function () {
+                const result = callback?.apply(this, arguments);
+                sync(node);
+                return result;
+            };
+        }
+        sync(this);
+        return result;
+    };
+    const configured = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+        const result = configured?.apply(this, arguments);
+        sync(this);
+        return result;
+    };
+}
+
 app.registerExtension({
     name: "FeiHouEasyH3RH",
     // RH change --start--
@@ -6237,6 +6355,7 @@ app.registerExtension({
         install();
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
+        installResolutionNode(nodeType, nodeData);
         localizeNodeDefinition(nodeData);
         installLoaderNode(nodeType, nodeData);
         installAdapterNode(nodeType, nodeData);

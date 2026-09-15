@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.4
+
+- Adds reference-video time ranges and play/stop previews; video frames and source audio are cropped together with 100 ms input normalization.
+- Replaces the automatic-duration toggle with Off / Reference audio / Reference video alignment, retaining legacy Boolean migration and stable widget ordering.
+- Includes clone-safe sampling handoff/cache fixes, multi-LoRA regular/bypass selection, the standalone resolution selector, and the optional text-encoder-only reference mode.
+- Preserves RunningHub LLM API/authentication/billing and resource selectors. Production-pack loading and experimental face refinement remain standard-only.
+- Validation: Python/JavaScript syntax, JSON parsing, crop/playback simulations and saved-widget migration tests. Live RunningHub generation was not performed locally.
+
 ## v1.4.3
 
 - Fixes complete streamed-block output-head compatibility with the updated ComfyUI 0.35 H3 calling convention, retaining native fallbacks.
