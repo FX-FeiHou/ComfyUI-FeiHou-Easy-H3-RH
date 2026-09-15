@@ -1,5 +1,12 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
+## v1.4.5 additions
+
+Adds RH-specific Production Pack Loader and experimental Face Refine, clean second-pass model extraction, automatic reference-face cropping, and the main prompt input socket.
+See [platform requirements](docs/rh-feature-parity.md), [production packages](docs/production-packs.md), and [face-refinement dependencies](FACE_REFINE.md).
+
+RunningHub must expose custom upload routes/storage and provide detector dependencies/weights. The package does not bypass platform restrictions. RH LLM authentication, billing and resource selection remain unchanged.
+
 [中文](README.md) | **English**
 
 > **Scope:** This is the RunningHub (RH) compatibility edition. For ordinary local ComfyUI use, prefer the standard edition: [ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3).

@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.5
+
+- Adds RH-specific experimental Face Refine, including original-audio conditioning, clean pre-LoRA second-pass model selection, automatic cropping of the first original reference image, and advanced-only controls.
+- Adds the RH Production Pack Loader: folder/ZIP import, HTML discovery, preview, generation order and multiple independently trimmed reference audios. Routes, socket IDs and caches are isolated from the standard edition; existing origin/path/ZIP security checks are retained.
+- Adds the main prompt input socket and preserves reference-video filenames during time trimming.
+- Preserves RunningHub LLM API, authentication/billing checks and resource selectors. Platform-managed API settings are not replaced with desktop-provider settings.
+- RunningHub must expose custom upload routes/storage and provide face-detector dependencies/weights. These capabilities cannot be guaranteed by the node package alone; see docs/rh-feature-parity.md.
+- Validation: CPU import of all 11 RH nodes, seven production-route tests, 20-audio package materialization, mocked face-refinement pipeline, Python/JSON/frontend checks and saved-widget migration tests. No live RunningHub/GPU generation was performed.
+
 ## v1.4.4
 
 - Adds reference-video time ranges and play/stop previews; video frames and source audio are cropped together with 100 ms input normalization.

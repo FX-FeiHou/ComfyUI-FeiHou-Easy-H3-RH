@@ -463,7 +463,13 @@ function localizeNodeInstance(node) {
         return;
     }
     if (!isTarget(node)) return;
+    if (!(node.inputs || []).some(input => input.name === "production_shot")) {
+        node.addInput?.("production_shot", "FEIHOU_H3_RH_PRODUCTION_SHOT");
+    }
     node.title = TEXT.mainTitle;
+    if (!(node.inputs || []).some(input => input.name === "prompt")) {
+        node.addInput?.("prompt", "STRING", { widget: { name: "prompt" } });
+    }
     const labels = { mode: TEXT.mode, prompt: TEXT.prompt, resolution: TEXT.resolution, aspect_ratio: TEXT.aspectRatio, width: TEXT.width, height: TEXT.height, audio_duration_auto: TEXT.audioDurationAuto, seconds: TEXT.seconds, advanced: TEXT.advanced, force_offload: TEXT.forceOffload, prompt_optimizer_enabled: TEXT.promptOptimizerEnabled, prompt_optimizer_api_format: TEXT.promptOptimizerApiFormat, prompt_optimizer_api_url: TEXT.promptOptimizerApiUrl, prompt_optimizer_api_key: TEXT.promptOptimizerApiKey, prompt_optimizer_model: TEXT.promptOptimizerModel, prompt_optimizer_scene_guide: TEXT.promptOptimizerSceneGuide, fps: TEXT.fps, keyframe_role: TEXT.keyframeRole, ref_image_size: TEXT.refImageSize, reference_mention_mode: TEXT.referenceMentionMode };
     for (const widget of node.widgets || []) {
         if (labels[widget.name]) widget.label = labels[widget.name];
@@ -1930,6 +1936,9 @@ function patchGraphToPrompt() {
             };
             setWidgetInput("mode", canonicalOption("mode", getWidgetValue(node, "mode", MODE_IMAGE)));
             setWidgetInput("audio_duration_auto", durationAlignment(getWidgetValue(node, "audio_duration_auto", "off")));
+            if (Array.isArray(promptNode.inputs.production_shot)) {
+                for (const [name, value] of Object.entries(productionFallbackValues(node))) setWidgetInput(name, value);
+            }
             setWidgetInput("resolution", canonicalOption("resolution", getWidgetValue(node, "resolution", "480P")));
             setWidgetInput("aspect_ratio", canonicalOption("aspect_ratio", getWidgetValue(node, "aspect_ratio", "16:9")));
             setWidgetInput("width", Number(getWidgetValue(node, "width", 1344)));
@@ -4975,6 +4984,47 @@ function ensurePromptEditor(node) {
 }
 
 
+function productionFallbackValues(node) {
+    node.properties ||= {};
+    const state = node.properties.feihou_h3_production_preview ||= { fallback: {}, shown: {} };
+    delete state.fallback.resolution;
+    delete state.fallback.width;
+    delete state.fallback.height;
+    for (const name of ["fps", "aspect_ratio"]) {
+        const current = getWidgetValue(node, name);
+        // A manual edit after a preview deliberately becomes the new fallback.
+        if (!Object.hasOwn(state.fallback, name) || (Object.hasOwn(state.shown, name) && current !== state.shown[name])) {
+            state.fallback[name] = current;
+        }
+    }
+    return state.fallback;
+}
+
+export function applyProductionShotPreview(node, shot) {
+    if (!isTarget(node) || !shot?.media || !shot?.params) return;
+    node.properties ||= {};
+    node.properties[EMBEDDED_MEDIA_PROP] = shot.media.map((item) => ({ ...item }));
+    const params = { ...productionFallbackValues(node), ...shot.params };
+    delete params.resolution;
+    delete params.width;
+    delete params.height;
+    for (const [name, value] of Object.entries(params)) {
+        const widget = getWidget(node, name);
+        if (!widget) continue;
+        widget.value = name === "audio_duration_auto" ? durationAlignment(value) : value;
+        if (widget._state) widget._state.value = widget.value;
+    }
+    node.properties.feihou_h3_production_preview.shown = Object.fromEntries(
+        ["fps", "resolution", "aspect_ratio"].map((name) => [name, getWidgetValue(node, name)]));
+    ensureEmbeddedMedia(node);
+    setPromptFromOptimizedText(node, shot.prompt);
+    syncModeWidgets(node, { adjustHeight: false });
+    renderEmbeddedMediaGallery(node);
+    renderEditorFromNode(node, true);
+    refreshVueNodeWidgets(node);
+    node.setDirtyCanvas?.(true, true);
+}
+
 function installPromptEditorSoon(node) {
     if (!node || node.__h3PromptInstallPending || node.__h3PromptInstallRetry || node.__h3Editor) return;
     const now = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -6337,6 +6387,60 @@ function installResolutionNode(nodeType, nodeData) {
     };
 }
 
+function installFaceRefineNode(nodeType, nodeData) {
+    if (nodeData?.name !== "FeiHouEasyH3RHFaceRefine") return;
+    const sync = node => {
+        const advanced = Boolean(getWidget(node, "advanced")?.value);
+        const chunk = getWidget(node, "chunk_frames");
+        if (chunk && !["不分段", "240", "192", "120", "72"].includes(String(chunk.value))) {
+            const n = Number(chunk.value);
+            chunk.value = String([72, 120, 192, 240].find(v => v >= n) || "不分段");
+        } else if (chunk) chunk.value = String(chunk.value);
+        for (const name of ["canvas_size", "confidence", "crop_factor", "chunk_frames", "sampler_name", "scheduler", "audio_lock", "clean_second_model", "force_offload"]) {
+            setConditionalWidgetVisible(node, getWidget(node, name), advanced, {adjustHeight: false});
+        }
+        setConditionalWidgetVisible(node, getWidget(node, "prompt"), false, {adjustHeight: false});
+        node.setSize?.([node.size[0], node.computeSize()[1]]);
+        node.setDirtyCanvas?.(true, true);
+    };
+    const created = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        const result = created?.apply(this, arguments);
+        const node = this;
+        // Display order is independent of the canonical positional save order.
+        this.__faceCanonicalNames = this.widgets.map(w => w.name);
+        this.__faceDefaults = Object.fromEntries(this.widgets.map(w => [w.name, w.value]));
+        const offload = getWidget(this, "force_offload");
+        if (offload) this.widgets = [...this.widgets.filter(w => w !== offload), offload];
+        const toggle = getWidget(this, "advanced");
+        if (toggle) {
+            const cb = toggle.callback;
+            toggle.callback = function () { const r = cb?.apply(this, arguments); sync(node); return r; };
+        }
+        sync(this);
+        return result;
+    };
+    const configured = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function () {
+        const info = arguments[0];
+        const result = configured?.apply(this, arguments);
+        for (const [i, name] of (this.__faceCanonicalNames || []).entries()) {
+            const w = getWidget(this, name);
+            const value = info?.face_widgets_named?.[name] ?? info?.widgets_values?.[i] ?? this.__faceDefaults?.[name];
+            if (w && value !== undefined) w.value = value;
+        }
+        sync(this); return result;
+    };
+    const serialized = nodeType.prototype.onSerialize;
+    nodeType.prototype.onSerialize = function (info) {
+        const result = serialized?.apply(this, arguments);
+        const names = this.__faceCanonicalNames || [];
+        info.widgets_values = names.map(name => getWidget(this, name)?.value);
+        info.face_widgets_named = Object.fromEntries(names.map((name, i) => [name, info.widgets_values[i]]));
+        return result;
+    };
+}
+
 app.registerExtension({
     name: "FeiHouEasyH3RH",
     // RH change --start--
@@ -6355,6 +6459,7 @@ app.registerExtension({
         install();
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
+        installFaceRefineNode(nodeType, nodeData);
         installResolutionNode(nodeType, nodeData);
         localizeNodeDefinition(nodeData);
         installLoaderNode(nodeType, nodeData);

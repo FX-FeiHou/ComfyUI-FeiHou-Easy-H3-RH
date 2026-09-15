@@ -10,7 +10,12 @@ from .nodes import (
     FeiHouEasyH3PromptPreview,
 )
 
+from .face_refine import FeiHouEasyH3FaceRefine
+from .production_pack import FeiHouEasyH3ProductionPackLoader
+
 NODE_CLASS_MAPPINGS = {
+    "FeiHouEasyH3RHFaceRefine": FeiHouEasyH3FaceRefine,
+    "FeiHouEasyH3RHProductionPackLoader": FeiHouEasyH3ProductionPackLoader,
     "FeiHouEasyH3RHResolution": FeiHouEasyH3Resolution,
     "FeiHouEasyH3RHRemixLoader": FeiHouEasyH3RemixLoader,
     # RH has distinct Comfy class IDs so it can coexist with the standard edition.
@@ -24,6 +29,8 @@ NODE_CLASS_MAPPINGS = {
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
+    "FeiHouEasyH3RHFaceRefine": "FeiHou Easy H3 Face Refine (Experimental) · RH",
+    "FeiHouEasyH3RHProductionPackLoader": "FeiHou Easy H3 Production Pack Loader · RH",
     "FeiHouEasyH3RHResolution": "FeiHou Easy H3 Resolution · RH",
     "FeiHouEasyH3RHRemixLoader": "FeiHou Easy H3 Remix加载器 · RH",
     "FeiHouEasyH3RHLoraStack": "加载LoRA（仅模型）· RH",

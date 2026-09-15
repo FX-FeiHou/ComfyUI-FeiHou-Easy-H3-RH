@@ -1,4 +1,104 @@
 {
+"FeiHouEasyH3RHFaceRefine": {
+    "display_name": "FeiHou Easy H3 Face Refine (Experimental) · RH",
+    "inputs": {
+      "images": {
+        "name": "Images"
+      },
+      "model": {
+        "name": "Model"
+      },
+      "h3_context": {
+        "name": "H3 context"
+      },
+      "enabled": {
+        "name": "Enabled"
+      },
+      "detector": {
+        "name": "Face detector"
+      },
+      "target": {
+        "name": "Target"
+      },
+      "denoise": {
+        "name": "Denoise"
+      },
+      "steps": {
+        "name": "Steps"
+      },
+      "seed": {
+        "name": "Seed"
+      },
+      "advanced": {
+        "name": "Advanced"
+      },
+      "canvas_size": {
+        "name": "Canvas"
+      },
+      "confidence": {
+        "name": "Confidence"
+      },
+      "crop_factor": {
+        "name": "Crop factor"
+      },
+      "chunk_frames": {
+        "name": "Chunk frames"
+      },
+      "sampler_name": {
+        "name": "Sampler"
+      },
+      "scheduler": {
+        "name": "Scheduler"
+      },
+      "prompt": {
+        "name": "Refinement prompt"
+      },
+      "force_offload": {
+        "name": "Force offload"
+      },
+      "audio_lock": {
+        "name": "Original audio conditioning (experimental)"
+      },
+      "clean_second_model": {
+        "name": "Use clean second-pass model"
+      },
+      "reference_face": {
+        "name": "Reference face"
+      },
+      "audio": {
+        "name": "Original audio"
+      }
+    }
+  },
+  "FeiHouEasyH3RHProductionPackLoader": {
+    "display_name": "FeiHou Easy H3 Production Pack Loader · RH",
+    "description": "Import a folder or ZIP, read the final Shotlist, and supply one shot per queued task. Enable increment after generation to advance the shot index.",
+    "inputs": {
+      "source": {
+        "name": "Package folder / ZIP path"
+      },
+      "shotlist_file": {
+        "name": "Shotlist path (optional)"
+      },
+      "audio_file": {
+        "name": "Soundtrack path (optional)"
+      },
+      "shot_index": {
+        "name": "Shot index"
+      },
+      "prompt_language": {
+        "name": "Prompt language"
+      },
+      "package_id": {
+        "name": "Prepared package ID"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Production shot"
+      }
+    }
+  },
   "FeiHouEasyH3RHResolution": {"display_name":"FeiHou Easy H3 Resolution","inputs":{"resolution":{"name":"Resolution"},"aspect_ratio":{"name":"Aspect ratio"},"width":{"name":"Custom width"},"height":{"name":"Custom height"}}},
   "FeiHouEasyH3RHLoraStack": { "display_name": "Load LoRA (Model Only)", "outputs": { "0": { "name": "LoRA stack" } } },
   "FeiHouEasyH3RHLoader": {

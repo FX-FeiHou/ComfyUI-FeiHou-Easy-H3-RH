@@ -2195,6 +2195,15 @@ class MiniMaxH3PromptOptimizer:
 
 
 
+def _pack_peer_is_local(request):
+    # Only the real peer address; forwarded IP headers never grant local access.
+    import ipaddress
+    try:
+        return ipaddress.ip_address(request.remote or "").is_loopback
+    except ValueError:
+        return False
+
+
 def _register_prompt_optimizer_route() -> bool:
     try:
         from aiohttp import web
@@ -2205,6 +2214,9 @@ def _register_prompt_optimizer_route() -> bool:
     if routes is None or getattr(_register_prompt_optimizer_route, "_registered", False):
         return bool(getattr(_register_prompt_optimizer_route, "_registered", False))
 
+
+    from .production_pack import register_routes
+    register_routes(routes, _pack_peer_is_local)
 
     # Keep RH endpoints distinct from the standard edition. Both packages may
     # be installed in one ComfyUI instance; sharing a route made the RH prompt
@@ -2574,7 +2586,9 @@ class MiniMaxH3Bundle:
                     base_model = _load_gguf_unet(model_name)
                 else:
                     base_model, = nodes.UNETLoader().load_unet(model_name, "default")
+                clean_base = base_model.clone()
                 model = self._apply_loras(base_model, self.second_lora_stack) if self.remix_loader else (self._apply_loras(base_model) if self.second_sampling_use_lora else base_model)
+                model.set_attachments("feihou_h3_clean_second_base", clean_base)
                 self._second_model = model
                 self._second_model_kind = kind
                 self._second_model_name = model_name
@@ -2811,6 +2825,7 @@ class MiniMaxH3Context:
     prompt_preview: str
     audio_1: Any = None
     duration_control: Any = None
+    reference_image_1: Any = None
 
 
 @dataclass(frozen=True)
@@ -3570,6 +3585,7 @@ class FeiHouEasyH3:
         # Last optional slot, same contract as RH_LLMChat: connect Settings or
         # leave empty to use PromptServer.shared_api_key / RH_API_KEY.
         optional["api_config"] = ("RH_OPENAPI_CONFIG",)
+        optional["production_shot"] = ("FEIHOU_H3_RH_PRODUCTION_SHOT", {"forceInput": True})
         return {
             "required": {
                 "h3_bundle": ("MINIMAX_H3_BUNDLE",),
@@ -3648,6 +3664,12 @@ class FeiHouEasyH3:
 
     @staticmethod
     def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None) -> list[_MediaInput]:
+        shot = kwargs.get("production_shot")
+        if shot is not None:
+            return [_MediaInput(index, item["media_type"],
+                                _load_embedded_media(f"{item['subfolder']}/{item['filename']}", item["media_type"]),
+                                f"{item['subfolder']}/{item['filename']}", item.get("audio_trim", ""))
+                    for index, item in enumerate(shot["media"], 1)]
         items = []
         for index, record in enumerate(_media_records_from_inputs(kwargs, extra_pnginfo, unique_id), start=1):
             value = record.get("value")
@@ -3690,6 +3712,17 @@ class FeiHouEasyH3:
         # ``advanced`` may itself come from an external input. Keep the backend
         # as the source of truth for this UI-only visibility gate.
         h3_bundle.force_offload_enabled = _as_bool(advanced) and _as_bool(force_offload)
+        production_shot = kwargs.get("production_shot")
+        if production_shot is not None:
+            if not isinstance(production_shot, dict) or production_shot.get("schema") != 1:
+                raise ValueError("Invalid RH production shot")
+            params = production_shot["params"]
+            prompt, mode = production_shot["prompt"], MODE_REFERENCE
+            seconds = params["seconds"]
+            aspect_ratio = params.get("aspect_ratio", aspect_ratio)
+            fps = params.get("fps", fps)
+            reference_mention_mode = REFERENCE_MENTION_INDEX
+            # Keep the platform API/billing path unchanged when enabled.
         reference_text_only = _as_bool(advanced) and _as_bool(kwargs.get("reference_text_only", False))
         if h3_bundle.force_offload_enabled:
             h3_bundle.release_residual_second_sampling_model()
@@ -3704,7 +3737,7 @@ class FeiHouEasyH3:
         items = cls._collect_media(kwargs, extra_pnginfo, unique_id)
         # Decode/crop each video once; duration and conditioning share these frames.
         items = [_MediaInput(item.input_index, item.media_type,
-                             _trim_reference_video(item.value, item.audio_trim), "")
+                             _trim_reference_video(item.value, item.audio_trim), item.filename, "")
                  if item.media_type == "video" else item for item in items]
         if mode == MODE_REFERENCE:
             _validate_reference_media_transport(prompt, items)
@@ -3768,14 +3801,14 @@ class FeiHouEasyH3:
                     "参考生视频模式需要至少一张参考图或一段参考视频。"
                     "画廊素材未传到执行端，请重新保存工作流后再运行。"
                 )
-            if len(items) > MAX_MEDIA:
+            if production_shot is None and len(items) > MAX_MEDIA:
                 raise ValueError("Reference mode accepts at most fifteen media resources")
             counts = {"image": 0, "video": 0, "audio": 0}
             for item in items:
                 if item.media_type not in counts:
                     raise ValueError("Unsupported media resource")
                 counts[item.media_type] += 1
-            if counts["image"] > MAX_IMAGES or counts["video"] > MAX_VIDEOS or counts["audio"] > MAX_AUDIOS:
+            if counts["image"] > MAX_IMAGES or counts["video"] > MAX_VIDEOS or (production_shot is None and counts["audio"] > MAX_AUDIOS):
                 raise ValueError("Reference mode media limits are 9 images, 3 videos and 3 audio clips")
             if counts["image"] == 0 and counts["video"] == 0:
                 raise ValueError("Reference mode needs an image or video in addition to audio")
@@ -3825,6 +3858,8 @@ class FeiHouEasyH3:
             audio_vae=h3_bundle.audio_vae,
             fps=float(fps),
             prompt_preview=prompt_preview,
+            reference_image_1=next((item.value[:1, ..., :3].detach().cpu().clone()
+                                    for item in items if item.media_type == "image"), None),
             audio_1=_first_reference_audio(items),
             duration_control=H3DurationControl(
                 enabled=audio_duration_enabled,

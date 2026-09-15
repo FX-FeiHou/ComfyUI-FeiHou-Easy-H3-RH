@@ -1,5 +1,12 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
+## v1.4.5 功能补齐
+
+新增 RH 专用制作包分镜加载器、人脸精修（实验）、纯净二采模型分支及自动参考人脸裁剪，主节点提示词支持外接。
+使用说明：[功能与平台限制](docs/rh-feature-parity.md)、[制作包](docs/production-packs.md)、[人脸精修与可选依赖](FACE_REFINE.md)。
+
+**平台限制**：RunningHub 需要开放自定义上传接口和文件存储才能上传 ZIP；人脸检测依赖和权重也需在执行服务器安装。本包不会绕过平台限制。RH 自家的 LLM API、鉴权、计费和资源选择接口保持不变。
+
 [English](README_EN.md) | **中文**
 
 > **适用范围：这是面向 RunningHub（RH）的适配版。** 日常本地 ComfyUI 使用请优先选择标准版：[ComfyUI-FeiHou-Easy-H3](https://github.com/FX-FeiHou/ComfyUI-FeiHou-Easy-H3)。
