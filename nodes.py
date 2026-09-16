@@ -2941,7 +2941,8 @@ class FeiHouEasyH3LoraStack:
             if not key.lower().startswith("lora_") or not isinstance(value, Mapping):
                 continue
             result.extend(_normalize_lora_stack([value]))
-        return (result,)
+        # Preserve RH resource resolution; migrate legacy regular-mode stacks.
+        return ([(name, strength, True) for name, strength, _ in result],)
 
 
 class FeiHouEasyH3Loader:

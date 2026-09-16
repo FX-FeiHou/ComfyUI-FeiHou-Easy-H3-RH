@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.6
+
+- Hides the LoRA bypass toggle and enables additive bypass consistently, including legacy regular-mode workflows and API inputs.
+- Preserves RunningHub LoRA resource selectors, LLM API, authentication/billing, strengths, enable flags and widget order.
+- Validated frontend migration, backend stack behavior, syntax and synchronized files. Live RunningHub GPU execution was not tested.
+
 ## v1.4.5
 
 - Adds RH-specific experimental Face Refine, including original-audio conditioning, clean pre-LoRA second-pass model selection, automatic cropping of the first original reference image, and advanced-only controls.
