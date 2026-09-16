@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.7
+
+- Checks standard linear LoRA dimensions before bypass loading. Skips incompatible layers with explicit warnings and matched/skipped counts; fails early when none are usable.
+- Preserves RunningHub resource resolution, LLM API and authentication/billing, plus matching adapters and multi-LoRA composition. Other adapter types are delegated to ComfyUI with an unvalidated warning.
+- No UI changes. CPU compatibility regressions tested; live RunningHub GPU execution not tested.
+
 ## v1.4.6
 
 - Hides the LoRA bypass toggle and enables additive bypass consistently, including legacy regular-mode workflows and API inputs.
