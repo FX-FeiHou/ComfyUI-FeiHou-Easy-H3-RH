@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.9
+
+- Adds the RH-compatible Dual Sample and Sample Enhancer nodes, including the `Default Trigger Words` switch on both Sample Enhancer passes. It defaults on without exposing the trigger text in the node UI.
+- Preserves RunningHub model/resource selectors, LLM API, authentication/billing checks and RH-specific node class IDs.
+- The default trigger words are prepended to the encoded prompt only when enabled; the trigger text is not exposed in the node UI.
+- Validation: Python/JavaScript syntax and source/installation synchronization; live RunningHub GPU generation was not performed.
+
 ## v1.4.8
 
 - Removes the face-refinement 24 FPS restriction; uses the frame rate supplied by H3 context for existing timing calculations and output.

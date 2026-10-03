@@ -6392,6 +6392,8 @@ function installFaceRefineNode(nodeType, nodeData) {
     const sync = node => {
         const advanced = Boolean(getWidget(node, "advanced")?.value);
         const chunk = getWidget(node, "chunk_frames");
+        const faceMode = getWidget(node, "face_mode");
+        const multi = ["multi", "多人"].includes(String(faceMode?.value || "single").toLowerCase());
         if (chunk && !["不分段", "240", "192", "120", "72"].includes(String(chunk.value))) {
             const n = Number(chunk.value);
             chunk.value = String([72, 120, 192, 240].find(v => v >= n) || "不分段");
@@ -6399,6 +6401,9 @@ function installFaceRefineNode(nodeType, nodeData) {
         for (const name of ["canvas_size", "confidence", "crop_factor", "chunk_frames", "sampler_name", "scheduler", "audio_lock", "clean_second_model", "force_offload"]) {
             setConditionalWidgetVisible(node, getWidget(node, name), advanced, {adjustHeight: false});
         }
+        setConditionalWidgetVisible(node, faceMode, true, {adjustHeight: false});
+        setConditionalWidgetVisible(node, getWidget(node, "target"), !multi, {adjustHeight: false});
+        setConditionalWidgetVisible(node, getWidget(node, "max_faces"), multi, {adjustHeight: false});
         setConditionalWidgetVisible(node, getWidget(node, "prompt"), false, {adjustHeight: false});
         node.setSize?.([node.size[0], node.computeSize()[1]]);
         node.setDirtyCanvas?.(true, true);
@@ -6413,9 +6418,14 @@ function installFaceRefineNode(nodeType, nodeData) {
         const offload = getWidget(this, "force_offload");
         if (offload) this.widgets = [...this.widgets.filter(w => w !== offload), offload];
         const toggle = getWidget(this, "advanced");
+        const faceMode = getWidget(this, "face_mode");
         if (toggle) {
             const cb = toggle.callback;
             toggle.callback = function () { const r = cb?.apply(this, arguments); sync(node); return r; };
+        }
+        if (faceMode) {
+            const cb = faceMode.callback;
+            faceMode.callback = function () { const r = cb?.apply(this, arguments); sync(node); return r; };
         }
         sync(this);
         return result;

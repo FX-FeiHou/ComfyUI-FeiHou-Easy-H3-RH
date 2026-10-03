@@ -2829,6 +2829,26 @@ class MiniMaxH3Context:
     audio_1: Any = None
     duration_control: Any = None
     reference_image_1: Any = None
+    # I2V/FL2V keyframe sources for canvas-size rebuilds (Sample Enhancer):
+    # tuple of (resolved_frame_index, crop_mode, IMAGE on CPU).
+    keyframe_images: Any = None
+    # Rebuilds canvas-sized conditioning at another width/height for the
+    # Sample Enhancer nodes.
+    highres_rebuilder: Any = None
+    # Plan handed from Sample Enhancer 1st to Sample Enhancer 2nd.
+    dual_plan: Any = None
+
+
+@dataclass(frozen=True)
+class H3HighresRebuilder:
+    """Re-run the exact RH Easy H3 conditioning builder at another canvas.
+
+    The callable may accept a third ``trigger_prefix`` argument. Existing
+    callers still pass only width and height.
+    """
+
+    build: Any
+    canvas_dependent: bool = True
 
 
 @dataclass(frozen=True)
@@ -2944,8 +2964,9 @@ class FeiHouEasyH3LoraStack:
             if not key.lower().startswith("lora_") or not isinstance(value, Mapping):
                 continue
             result.extend(_normalize_lora_stack([value]))
-        # Preserve RH resource resolution; migrate legacy regular-mode stacks.
-        return ([(name, strength, True) for name, strength, _ in result],)
+        # Preserve RH resource resolution while honoring each row's bypass
+        # switch. Legacy rows still default to bypass in _normalize_lora_stack.
+        return (result,)
 
 
 class FeiHouEasyH3Loader:
@@ -3743,6 +3764,9 @@ class FeiHouEasyH3:
         items = [_MediaInput(item.input_index, item.media_type,
                              _trim_reference_video(item.value, item.audio_trim), item.filename, "")
                  if item.media_type == "video" else item for item in items]
+        keyframe_images = None
+        highres_rebuilder = None
+        ref_size_is_match = str(ref_image_size or "").strip().lower() in {"match", "匹配"}
         if mode == MODE_REFERENCE:
             _validate_reference_media_transport(prompt, items)
         alignment = _duration_alignment(audio_duration_auto)
@@ -3818,6 +3842,11 @@ class FeiHouEasyH3:
                 raise ValueError("Reference mode needs an image or video in addition to audio")
             model = h3_bundle.model_for("ref2va")
             conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only)
+            highres_rebuilder = H3HighresRebuilder(
+                build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _r=ref_image_size, _i=tuple(items), _t=reference_text_only:
+                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t)[:2],
+                canvas_dependent=ref_size_is_match,
+            )
         else:
             image_items = [item for item in items if item.media_type == "image"]
             first_frame, last_frame = cls._keyframes(image_items, keyframe_role)
@@ -3830,9 +3859,24 @@ class FeiHouEasyH3:
                 conditioning, latent, prompt_preview = _reference_conditioning(
                     h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only
                 )
+                highres_rebuilder = H3HighresRebuilder(
+                    build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _r=ref_image_size, _i=tuple(items), _t=reference_text_only:
+                        _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t)[:2],
+                    canvas_dependent=ref_size_is_match,
+                )
             else:
                 conditioning, latent = _empty_image_conditioning(h3_bundle, prompt, width, height, length, first_frame, last_frame)
                 prompt_preview = str(prompt or "")
+                keyframe_images = tuple(
+                    (index, crop, frame[:1, ..., :3].detach().cpu().clone())
+                    for index, crop, frame in ((0, "disabled", first_frame), (length - 1, "center", last_frame))
+                    if isinstance(frame, torch.Tensor) and frame.ndim == 4
+                ) or None
+                highres_rebuilder = H3HighresRebuilder(
+                    build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _f=first_frame, _z=last_frame:
+                        _empty_image_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _f, _z),
+                    canvas_dependent=first_frame is not None or last_frame is not None,
+                )
         model = _clone_h3_model_with_memory_features(model,
             force_offload=h3_bundle.force_offload_enabled,
             streamed_attention=_as_bool(advanced) and _as_bool(low_vram_streamed_attention))
@@ -3869,6 +3913,8 @@ class FeiHouEasyH3:
                 enabled=audio_duration_enabled,
                 target_seconds=requested_audio_seconds,
             ),
+            keyframe_images=keyframe_images,
+            highres_rebuilder=highres_rebuilder,
         )
         if h3_bundle.force_offload_enabled:
             _release_auxiliary_models_for_sampling(h3_bundle, phase="first-pass sampling")

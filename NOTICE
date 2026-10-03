@@ -24,3 +24,11 @@ When redistributing this project or substantial portions of it, retain the
 LICENSE and this NOTICE file.
 
 Low-VRAM streaming includes GPL-3.0-or-later code from MATLOWAI/ComfyUI-MAINodes (https://github.com/matlowai/ComfyUI-MAINodes), adapted in third_party/mainodes_h3_streamed_blocks.py. See LICENSES/GPL-3.0-or-later-ComfyUI-MAINodes.txt.
+
+The Dual Sample nodes' dual-clock Euler sampler, learned 3D latent resizer
+(network, latent statistics, geometry) and Semantic Bridge adapter are adapted
+from comfyui-minimax-h3-audio-T8, Copyright (C) 2026 MiniMax H3 Audio T8
+contributors. The retained source is in third_party/h3_dual_clock.py,
+third_party/h3_learned_upscale.py and third_party/h3_semantic_bridge*.py and
+is distributed under GNU GPL-3.0-or-later; see
+LICENSES/GPL-3.0-or-later-comfyui-minimax-h3-audio.txt.

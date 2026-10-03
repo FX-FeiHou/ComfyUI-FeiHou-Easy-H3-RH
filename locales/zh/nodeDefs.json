@@ -62,8 +62,17 @@
       "clean_second_model": {
         "name": "使用纯净二采模型"
       },
+      "face_mode": {
+        "name": "修复人数模式"
+      },
+      "max_faces": {
+        "name": "最多修复人数"
+      },
       "reference_face": {
         "name": "参考人脸"
+      },
+      "reference_faces": {
+        "name": "多人参考图批次"
       },
       "audio": {
         "name": "原音频"

@@ -62,8 +62,17 @@
       "clean_second_model": {
         "name": "Use clean second-pass model"
       },
+      "face_mode": {
+        "name": "Face mode"
+      },
+      "max_faces": {
+        "name": "Maximum faces"
+      },
       "reference_face": {
         "name": "Reference face"
+      },
+      "reference_faces": {
+        "name": "Reference face batch"
       },
       "audio": {
         "name": "Original audio"
