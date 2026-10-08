@@ -1,5 +1,5 @@
 {
-"FeiHouEasyH3RHFaceRefine": {
+  "FeiHouEasyH3RHFaceRefine": {
     "display_name": "FeiHou Easy H3 人脸精修（实验） · RH",
     "inputs": {
       "images": {
@@ -100,6 +100,18 @@
       },
       "package_id": {
         "name": "已准备制作包 ID"
+      },
+      "continuation": {
+        "name": "分镜衔接"
+      },
+      "context_frames": {
+        "name": "接续帧数（一采+二采）"
+      },
+      "continue_video": {
+        "name": "接续视频"
+      },
+      "use_pack": {
+        "name": "批量运行制作包"
       }
     },
     "outputs": {
@@ -108,28 +120,393 @@
       }
     }
   },
-  "FeiHouEasyH3RHResolution": {"display_name":"FeiHou Easy H3 分辨率 · RH","description":"与 Easy H3 主节点使用相同的尺寸计算规则。自定义分辨率时使用宽度、高度。","inputs":{"resolution":{"name":"分辨率"},"aspect_ratio":{"name":"宽高比"},"width":{"name":"自定义宽度"},"height":{"name":"自定义高度"}},"outputs":{"0":{"name":"宽度"},"1":{"name":"高度"}}},
-  "FeiHouEasyH3RHLoraStack": { "display_name": "加载LoRA（仅模型）", "outputs": { "0": { "name": "LoRA 堆栈" } } },
+  "FeiHouEasyH3RHResolution": {
+    "display_name": "FeiHou Easy H3 分辨率 · RH",
+    "description": "与 Easy H3 主节点使用相同的尺寸计算规则。自定义分辨率时使用宽度、高度。",
+    "inputs": {
+      "resolution": {
+        "name": "分辨率"
+      },
+      "aspect_ratio": {
+        "name": "宽高比"
+      },
+      "width": {
+        "name": "自定义宽度"
+      },
+      "height": {
+        "name": "自定义高度"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "宽度"
+      },
+      "1": {
+        "name": "高度"
+      }
+    }
+  },
+  "FeiHouEasyH3RHLoraStack": {
+    "display_name": "加载LoRA（仅模型）",
+    "outputs": {
+      "0": {
+        "name": "LoRA 堆栈"
+      }
+    }
+  },
   "FeiHouEasyH3RHLoader": {
     "display_name": "FeiHou Easy H3 加载器",
     "inputs": {
-      "fl2va_model": { "name": "FL2VA 模型" }, "ref2va_model": { "name": "REF2VA 模型" },
-      "text_encoder": { "name": "文本编码器" }, "video_vae": { "name": "视频 VAE" }, "audio_vae": { "name": "音频 VAE" },
-      "custom_second_sampling_models": { "name": "自定义二采模型" }, "second_fl2va_model": { "name": "二采 FL2VA 模型" },
-      "second_ref2va_model": { "name": "二采 REF2VA 模型" }, "second_sampling_use_lora": { "name": "二采使用 LoRA" }
-    }, "outputs": { "0": { "name": "H3 模型组合" } }
+      "fl2va_model": {
+        "name": "FL2VA 模型"
+      },
+      "ref2va_model": {
+        "name": "REF2VA 模型"
+      },
+      "text_encoder": {
+        "name": "文本编码器"
+      },
+      "video_vae": {
+        "name": "视频 VAE"
+      },
+      "audio_vae": {
+        "name": "音频 VAE"
+      },
+      "custom_second_sampling_models": {
+        "name": "自定义二采模型"
+      },
+      "second_fl2va_model": {
+        "name": "二采 FL2VA 模型"
+      },
+      "second_ref2va_model": {
+        "name": "二采 REF2VA 模型"
+      },
+      "second_sampling_use_lora": {
+        "name": "二采使用 LoRA"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "H3 模型组合"
+      }
+    }
   },
   "FeiHouEasyH3RH": {
     "display_name": "ComfyUI-FeiHou-Easy-H3-RH",
     "inputs": {
-      "h3_bundle": { "name": "H3 模型组合" }, "mode": { "name": "模式", "options": { "image": "图生或首尾帧", "reference": "参考生视频" } },
-      "prompt": { "name": "提示词" }, "resolution": { "name": "分辨率" }, "aspect_ratio": { "name": "宽高比" }, "width": { "name": "宽度" }, "height": { "name": "高度" }, "audio_duration_auto": {"name":"自动时长对齐","options":{"off":"关闭","audio":"参考音频对齐","video":"参考视频对齐"}}, "seconds": { "name": "秒数" }, "advanced": { "name": "高级选项" }, "force_offload": { "name": "强制卸载" }, "fps": { "name": "帧率（FPS）" },
-      "keyframe_role": { "name": "首尾帧设置", "options": { "first": "首帧优先", "last": "尾帧优先" } },
-      "ref_image_size": { "name": "参考图尺寸（短边）", "options": { "match": "匹配生成分辨率" } }, "reference_mention_mode": { "name": "@引用方式", "options": { "filename": "按文件名", "index": "按序号" } },
-      "prompt_optimizer_enabled": { "name": "提示词优化" }, "prompt_optimizer_api_format": { "name": "API 格式（自动识别）" }, "prompt_optimizer_api_url": { "name": "API 地址（留空=RH）" }, "prompt_optimizer_api_key": { "name": "API 密钥（留空=RH）" }, "prompt_optimizer_model": { "name": "模型" }, "prompt_optimizer_scene_guide": { "name": "提示词方案" }, "api_config": { "name": "api_config" }
-    }, "outputs": { "0": { "name": "模型" }, "1": { "name": "二次采样模型" }, "2": { "name": "H3 Context" } }
+      "h3_bundle": {
+        "name": "H3 模型组合"
+      },
+      "mode": {
+        "name": "模式",
+        "options": {
+          "image": "图生或首尾帧",
+          "reference": "参考生视频"
+        }
+      },
+      "prompt": {
+        "name": "提示词"
+      },
+      "resolution": {
+        "name": "分辨率"
+      },
+      "aspect_ratio": {
+        "name": "宽高比"
+      },
+      "width": {
+        "name": "宽度"
+      },
+      "height": {
+        "name": "高度"
+      },
+      "audio_duration_auto": {
+        "name": "自动时长对齐",
+        "options": {
+          "off": "关闭",
+          "audio": "参考音频对齐",
+          "video": "参考视频对齐"
+        }
+      },
+      "seconds": {
+        "name": "秒数"
+      },
+      "advanced": {
+        "name": "高级选项"
+      },
+      "force_offload": {
+        "name": "强制卸载"
+      },
+      "fps": {
+        "name": "帧率（FPS）"
+      },
+      "keyframe_role": {
+        "name": "首尾帧设置",
+        "options": {
+          "first": "首帧优先",
+          "last": "尾帧优先"
+        }
+      },
+      "ref_image_size": {
+        "name": "参考图尺寸（短边）",
+        "options": {
+          "match": "匹配生成分辨率"
+        }
+      },
+      "reference_mention_mode": {
+        "name": "@引用方式",
+        "options": {
+          "filename": "按文件名",
+          "index": "按序号"
+        }
+      },
+      "prompt_optimizer_enabled": {
+        "name": "提示词优化"
+      },
+      "prompt_optimizer_api_format": {
+        "name": "API 格式（自动识别）"
+      },
+      "prompt_optimizer_api_url": {
+        "name": "API 地址（留空=RH）"
+      },
+      "prompt_optimizer_api_key": {
+        "name": "API 密钥（留空=RH）"
+      },
+      "prompt_optimizer_model": {
+        "name": "模型"
+      },
+      "prompt_optimizer_scene_guide": {
+        "name": "提示词方案"
+      },
+      "api_config": {
+        "name": "api_config"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "二次采样模型"
+      },
+      "2": {
+        "name": "H3 Context"
+      }
+    }
   },
-  "FeiHouEasyH3RHOutput": { "display_name": "FeiHou Easy H3 输出 · RH", "inputs": { "h3_context": { "name": "H3 Context" } }, "outputs": { "0": { "name": "正面条件" }, "1": { "name": "潜空间" }, "2": { "name": "视频 VAE" }, "3": { "name": "音频 VAE" }, "4": { "name": "FPS" }, "5": { "name": "提示词反推输出" }, "6": { "name": "CLIP" }, "7": { "name": "Audio 1 音频" }, "8": { "name": "时长控制" } } },
-  "FeiHouEasyH3RHDurationCrop": { "display_name": "FeiHou Easy H3 数字人/MV 时长裁剪 · RH", "inputs": { "images": { "name": "图像" }, "fps": { "name": "帧率（FPS）" }, "duration_control": { "name": "时长控制" }, "audio": { "name": "音频" } }, "outputs": { "0": { "name": "图像" }, "1": { "name": "帧率（FPS）" }, "2": { "name": "音频" } } },
-  "FeiHouEasyH3RHPromptPreview": { "display_name": "FeiHou Easy H3 提示词预览 · RH", "inputs": { "text": { "name": "提示词反推输出" } }, "outputs": { "0": { "name": "文本" } } }
+  "FeiHouEasyH3RHOutput": {
+    "display_name": "FeiHou Easy H3 输出 · RH",
+    "inputs": {
+      "h3_context": {
+        "name": "H3 Context"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "正面条件"
+      },
+      "1": {
+        "name": "潜空间"
+      },
+      "2": {
+        "name": "视频 VAE"
+      },
+      "3": {
+        "name": "音频 VAE"
+      },
+      "4": {
+        "name": "FPS"
+      },
+      "5": {
+        "name": "提示词反推输出"
+      },
+      "6": {
+        "name": "CLIP"
+      },
+      "7": {
+        "name": "Audio 1 音频"
+      },
+      "8": {
+        "name": "时长控制"
+      }
+    }
+  },
+  "FeiHouEasyH3RHDurationCrop": {
+    "display_name": "FeiHou Easy H3 数字人/MV 时长裁剪 · RH",
+    "inputs": {
+      "images": {
+        "name": "图像"
+      },
+      "fps": {
+        "name": "帧率（FPS）"
+      },
+      "duration_control": {
+        "name": "时长控制"
+      },
+      "audio": {
+        "name": "音频"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "图像"
+      },
+      "1": {
+        "name": "帧率（FPS）"
+      },
+      "2": {
+        "name": "音频"
+      }
+    }
+  },
+  "FeiHouEasyH3RHPromptPreview": {
+    "display_name": "FeiHou Easy H3 提示词预览 · RH",
+    "inputs": {
+      "text": {
+        "name": "提示词反推输出"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "文本"
+      }
+    }
+  },
+  "FeiHouEasyH3RHSetup": {
+    "display_name": "FeiHou Easy H3 Setup · RH",
+    "inputs": {
+      "h3_bundle": {
+        "name": "H3 模型组合"
+      },
+      "mode": {
+        "name": "模式",
+        "options": {
+          "image": "图生或首尾帧",
+          "reference": "参考生视频"
+        }
+      },
+      "prompt": {
+        "name": "提示词"
+      },
+      "resolution": {
+        "name": "分辨率"
+      },
+      "aspect_ratio": {
+        "name": "宽高比"
+      },
+      "width": {
+        "name": "宽度"
+      },
+      "height": {
+        "name": "高度"
+      },
+      "audio_duration_auto": {
+        "name": "自动时长对齐",
+        "options": {
+          "off": "关闭",
+          "audio": "参考音频对齐",
+          "video": "参考视频对齐"
+        }
+      },
+      "seconds": {
+        "name": "秒数"
+      },
+      "advanced": {
+        "name": "高级选项"
+      },
+      "force_offload": {
+        "name": "强制卸载"
+      },
+      "fps": {
+        "name": "帧率（FPS）"
+      },
+      "keyframe_role": {
+        "name": "首尾帧设置",
+        "options": {
+          "first": "首帧优先",
+          "last": "尾帧优先"
+        }
+      },
+      "ref_image_size": {
+        "name": "参考图尺寸（短边）",
+        "options": {
+          "match": "匹配生成分辨率"
+        }
+      },
+      "reference_mention_mode": {
+        "name": "@引用方式",
+        "options": {
+          "filename": "按文件名",
+          "index": "按序号"
+        }
+      },
+      "prompt_optimizer_enabled": {
+        "name": "提示词优化"
+      },
+      "prompt_optimizer_api_format": {
+        "name": "API 格式（自动识别）"
+      },
+      "prompt_optimizer_api_url": {
+        "name": "API 地址（留空=RH）"
+      },
+      "prompt_optimizer_api_key": {
+        "name": "API 密钥（留空=RH）"
+      },
+      "prompt_optimizer_model": {
+        "name": "模型"
+      },
+      "prompt_optimizer_scene_guide": {
+        "name": "提示词方案"
+      },
+      "api_config": {
+        "name": "api_config"
+      },
+      "h3_media": {
+        "name": "H3 媒体"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "模型"
+      },
+      "1": {
+        "name": "二次采样模型"
+      },
+      "2": {
+        "name": "H3 Context"
+      }
+    }
+  },
+  "FeiHouEasyH3RHMedia": {
+    "display_name": "FeiHou Easy H3 Media · RH",
+    "outputs": {
+      "h3_media": {
+        "name": "H3 媒体"
+      }
+    }
+  },
+  "FeiHouEasyH3RHContinueOut": {
+    "display_name": "FeiHou Easy H3 接续合并 · RH",
+    "inputs": {
+      "continue_from": {
+        "name": "接续来源"
+      },
+      "production_shot": {
+        "name": "制作包分镜"
+      }
+    },
+    "outputs": {
+      "images": {
+        "name": "画面"
+      },
+      "audio": {
+        "name": "音频"
+      },
+      "tail_latent": {
+        "name": "接续尾部 Latent"
+      },
+      "fps": {
+        "name": "FPS"
+      }
+    }
+  }
 }

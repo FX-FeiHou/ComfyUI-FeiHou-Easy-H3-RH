@@ -1,5 +1,13 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
+## v1.4.10：Setup / Media 与接续补齐
+
+- 新增完整的 `FeiHou Easy H3 Media · RH` 和 `FeiHou Easy H3 Setup · RH`。连线：Media 的 `h3_media` → Setup；Loader 的 `h3_bundle` → Setup；Setup 的原有 Model / 二采模型 / H3 Context 继续接原工作流。
+- 视频/音频截取、播放、提示词引用、自动时长对齐沿用 RH 主节点逻辑；Media 也支持外部 JSON 传参，不依赖浏览器截图或工作流元数据。
+- 制作包 `production_shot` 同时接 Setup 和 `接续合并 · RH`，采样仍由外部一采/二采节点执行。接续合并放在最终采样/解码之后；尾部 `tail_latent` 接 **FeiHou Toolbox Video Combine V2** 的 latent 保存同名接续文件。详见[RH 接续与媒体说明](docs/rh-feature-parity.md)。
+- 补齐只读核心兼容探测、补丁诊断及人脸精修画布档位；不会替换 RH 自家 API、鉴权计费或资源选择规则。
+- 本次不包含制作包无参考图分镜及 HTML 资产路径映射。
+
 ## v1.4.5 功能补齐
 
 新增 RH 专用制作包分镜加载器、人脸精修（实验）、纯净二采模型分支及自动参考人脸裁剪，主节点提示词支持外接。

@@ -18,6 +18,8 @@ from .dual_sample import (
     FeiHouEasyH3SampleEnhancer1st,
     FeiHouEasyH3SampleEnhancer2nd,
 )
+from .split_nodes import FeiHouEasyH3RHContinuousOutput, FeiHouEasyH3RHMedia, FeiHouEasyH3RHSetup
+from .production_continuation import FeiHouEasyH3ContinueOut
 
 NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHFaceRefine": FeiHouEasyH3FaceRefine,
@@ -36,6 +38,10 @@ NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHDualSample2nd": FeiHouEasyH3DualSample2nd,
     "FeiHouEasyH3RHSampleEnhancer1st": FeiHouEasyH3SampleEnhancer1st,
     "FeiHouEasyH3RHSampleEnhancer2nd": FeiHouEasyH3SampleEnhancer2nd,
+    "FeiHouEasyH3RHMedia": FeiHouEasyH3RHMedia,
+    "FeiHouEasyH3RHSetup": FeiHouEasyH3RHSetup,
+    "FeiHouEasyH3RHContinuousOutput": FeiHouEasyH3RHContinuousOutput,
+    "FeiHouEasyH3RHContinueOut": FeiHouEasyH3ContinueOut,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -54,6 +60,10 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FeiHouEasyH3RHDualSample2nd": "FeiHou Easy H3 Dual Sample 2nd（二采）· RH",
     "FeiHouEasyH3RHSampleEnhancer1st": "FeiHou Easy H3 1st Sample Enhancer（一采）· RH",
     "FeiHouEasyH3RHSampleEnhancer2nd": "FeiHou Easy H3 2nd Sample Enhancer（二采）· RH",
+    "FeiHouEasyH3RHMedia": "FeiHou Easy H3 Media · RH",
+    "FeiHouEasyH3RHSetup": "FeiHou Easy H3 Setup · RH",
+    "FeiHouEasyH3RHContinuousOutput": "FeiHou Easy H3 Continuous 输出 · RH",
+    "FeiHouEasyH3RHContinueOut": "FeiHou Easy H3 接续合并 · RH",
 }
 
 WEB_DIRECTORY = "./web"

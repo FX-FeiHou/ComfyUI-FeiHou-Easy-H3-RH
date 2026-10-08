@@ -2778,9 +2778,9 @@ def _apply_complete_streamed_blocks(model):
 
 
 def _clone_h3_model_with_memory_features(model, *, force_offload: bool, streamed_attention: bool):
-    """Attach optional per-workflow H3 memory features to a model clone."""
-    if not force_offload and not streamed_attention:
-        return model
+    """Attach clone-scoped memory features and advisory diagnostics; retain other patches."""
+    from .h3_diagnostics import diagnose, sampling_diagnostics
+    diagnose(model, "before Easy H3 RH features")
     try:
         patched = model.clone()
     except Exception as exc:
@@ -2788,6 +2788,14 @@ def _clone_h3_model_with_memory_features(model, *, force_offload: bool, streamed
         return model
     if streamed_attention:
         patched = _apply_complete_streamed_blocks(patched)
+
+    try:
+        import comfy.patcher_extension
+        patched.remove_wrappers_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE, "feihou_h3_rh_diagnostics")
+        patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.OUTER_SAMPLE,
+                                    "feihou_h3_rh_diagnostics", sampling_diagnostics)
+    except Exception as exc:
+        logging.warning("Easy H3 RH: sampling diagnostics unavailable (%s); existing patches retained", type(exc).__name__)
 
     if force_offload:
         try:

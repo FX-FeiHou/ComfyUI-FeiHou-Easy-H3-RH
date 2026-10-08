@@ -1,5 +1,5 @@
 {
-"FeiHouEasyH3RHFaceRefine": {
+  "FeiHouEasyH3RHFaceRefine": {
     "display_name": "FeiHou Easy H3 Face Refine (Experimental) · RH",
     "inputs": {
       "images": {
@@ -100,6 +100,18 @@
       },
       "package_id": {
         "name": "Prepared package ID"
+      },
+      "continuation": {
+        "name": "Shot transition"
+      },
+      "context_frames": {
+        "name": "Continuation frames (1st+2nd pass)"
+      },
+      "continue_video": {
+        "name": "Continue from video"
+      },
+      "use_pack": {
+        "name": "Run production pack in batch"
       }
     },
     "outputs": {
@@ -108,28 +120,384 @@
       }
     }
   },
-  "FeiHouEasyH3RHResolution": {"display_name":"FeiHou Easy H3 Resolution","inputs":{"resolution":{"name":"Resolution"},"aspect_ratio":{"name":"Aspect ratio"},"width":{"name":"Custom width"},"height":{"name":"Custom height"}}},
-  "FeiHouEasyH3RHLoraStack": { "display_name": "Load LoRA (Model Only)", "outputs": { "0": { "name": "LoRA stack" } } },
+  "FeiHouEasyH3RHResolution": {
+    "display_name": "FeiHou Easy H3 Resolution",
+    "inputs": {
+      "resolution": {
+        "name": "Resolution"
+      },
+      "aspect_ratio": {
+        "name": "Aspect ratio"
+      },
+      "width": {
+        "name": "Custom width"
+      },
+      "height": {
+        "name": "Custom height"
+      }
+    }
+  },
+  "FeiHouEasyH3RHLoraStack": {
+    "display_name": "Load LoRA (Model Only)",
+    "outputs": {
+      "0": {
+        "name": "LoRA stack"
+      }
+    }
+  },
   "FeiHouEasyH3RHLoader": {
     "display_name": "FeiHou Easy H3 Loader",
     "inputs": {
-      "fl2va_model": { "name": "FL2VA model" }, "ref2va_model": { "name": "REF2VA model" },
-      "text_encoder": { "name": "Text encoder" }, "video_vae": { "name": "Video VAE" }, "audio_vae": { "name": "Audio VAE" },
-      "custom_second_sampling_models": { "name": "Custom second-pass models" }, "second_fl2va_model": { "name": "Second-pass FL2VA model" },
-      "second_ref2va_model": { "name": "Second-pass REF2VA model" }, "second_sampling_use_lora": { "name": "Use LoRA for second pass" }
-    }, "outputs": { "0": { "name": "H3 model bundle" } }
+      "fl2va_model": {
+        "name": "FL2VA model"
+      },
+      "ref2va_model": {
+        "name": "REF2VA model"
+      },
+      "text_encoder": {
+        "name": "Text encoder"
+      },
+      "video_vae": {
+        "name": "Video VAE"
+      },
+      "audio_vae": {
+        "name": "Audio VAE"
+      },
+      "custom_second_sampling_models": {
+        "name": "Custom second-pass models"
+      },
+      "second_fl2va_model": {
+        "name": "Second-pass FL2VA model"
+      },
+      "second_ref2va_model": {
+        "name": "Second-pass REF2VA model"
+      },
+      "second_sampling_use_lora": {
+        "name": "Use LoRA for second pass"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "H3 model bundle"
+      }
+    }
   },
   "FeiHouEasyH3RH": {
     "display_name": "ComfyUI-FeiHou-Easy-H3-RH",
     "inputs": {
-      "h3_bundle": { "name": "H3 model bundle" }, "mode": { "name": "Mode", "options": { "image": "I2V or First/Last Frame", "reference": "Reference-to-video" } },
-      "prompt": { "name": "Prompt" }, "resolution": { "name": "Resolution" }, "aspect_ratio": { "name": "Aspect ratio" }, "width": { "name": "Width" }, "height": { "name": "Height" }, "audio_duration_auto": {"name":"Automatic duration alignment","options":{"off":"Off","audio":"Reference audio","video":"Reference video"}}, "seconds": { "name": "Seconds" }, "advanced": { "name": "Advanced options" }, "force_offload": { "name": "Force offload" }, "fps": { "name": "Frame rate (FPS)" },
-      "keyframe_role": { "name": "First/last frame setup", "options": { "first": "First frame priority", "last": "Last frame priority" } },
-      "ref_image_size": { "name": "Reference image size (short edge)", "options": { "match": "Match generation size" } }, "reference_mention_mode": { "name": "@ reference mode", "options": { "filename": "By filename", "index": "By index" } },
-      "prompt_optimizer_enabled": { "name": "Prompt optimization" }, "prompt_optimizer_api_format": { "name": "API format (auto-detect)" }, "prompt_optimizer_api_url": { "name": "API URL (empty = RH)" }, "prompt_optimizer_api_key": { "name": "API key (empty = RH)" }, "prompt_optimizer_model": { "name": "Model" }, "prompt_optimizer_scene_guide": { "name": "Prompt Guide" }, "api_config": { "name": "api_config" }
-    }, "outputs": { "0": { "name": "Model" }, "1": { "name": "Second sampling model" }, "2": { "name": "H3 Context" } }
+      "h3_bundle": {
+        "name": "H3 model bundle"
+      },
+      "mode": {
+        "name": "Mode",
+        "options": {
+          "image": "I2V or First/Last Frame",
+          "reference": "Reference-to-video"
+        }
+      },
+      "prompt": {
+        "name": "Prompt"
+      },
+      "resolution": {
+        "name": "Resolution"
+      },
+      "aspect_ratio": {
+        "name": "Aspect ratio"
+      },
+      "width": {
+        "name": "Width"
+      },
+      "height": {
+        "name": "Height"
+      },
+      "audio_duration_auto": {
+        "name": "Automatic duration alignment",
+        "options": {
+          "off": "Off",
+          "audio": "Reference audio",
+          "video": "Reference video"
+        }
+      },
+      "seconds": {
+        "name": "Seconds"
+      },
+      "advanced": {
+        "name": "Advanced options"
+      },
+      "force_offload": {
+        "name": "Force offload"
+      },
+      "fps": {
+        "name": "Frame rate (FPS)"
+      },
+      "keyframe_role": {
+        "name": "First/last frame setup",
+        "options": {
+          "first": "First frame priority",
+          "last": "Last frame priority"
+        }
+      },
+      "ref_image_size": {
+        "name": "Reference image size (short edge)",
+        "options": {
+          "match": "Match generation size"
+        }
+      },
+      "reference_mention_mode": {
+        "name": "@ reference mode",
+        "options": {
+          "filename": "By filename",
+          "index": "By index"
+        }
+      },
+      "prompt_optimizer_enabled": {
+        "name": "Prompt optimization"
+      },
+      "prompt_optimizer_api_format": {
+        "name": "API format (auto-detect)"
+      },
+      "prompt_optimizer_api_url": {
+        "name": "API URL (empty = RH)"
+      },
+      "prompt_optimizer_api_key": {
+        "name": "API key (empty = RH)"
+      },
+      "prompt_optimizer_model": {
+        "name": "Model"
+      },
+      "prompt_optimizer_scene_guide": {
+        "name": "Prompt Guide"
+      },
+      "api_config": {
+        "name": "api_config"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Second sampling model"
+      },
+      "2": {
+        "name": "H3 Context"
+      }
+    }
   },
-  "FeiHouEasyH3RHOutput": { "display_name": "FeiHou Easy H3 Output · RH", "inputs": { "h3_context": { "name": "H3 Context" } }, "outputs": { "0": { "name": "Positive" }, "1": { "name": "Latent" }, "2": { "name": "Video VAE" }, "3": { "name": "Audio VAE" }, "4": { "name": "FPS" }, "5": { "name": "Prompt inference output" }, "6": { "name": "CLIP" }, "7": { "name": "Audio 1" }, "8": { "name": "Duration control" } } },
-  "FeiHouEasyH3RHDurationCrop": { "display_name": "FeiHou Easy H3 Digital human/MV Duration Crop · RH", "inputs": { "images": { "name": "Images" }, "fps": { "name": "Frame rate (FPS)" }, "duration_control": { "name": "Duration control" }, "audio": { "name": "Audio" } }, "outputs": { "0": { "name": "Images" }, "1": { "name": "Frame rate (FPS)" }, "2": { "name": "Audio" } } },
-  "FeiHouEasyH3RHPromptPreview": { "display_name": "FeiHou Easy H3 Prompt Preview · RH", "inputs": { "text": { "name": "Prompt inference output" } }, "outputs": { "0": { "name": "Text" } } }
+  "FeiHouEasyH3RHOutput": {
+    "display_name": "FeiHou Easy H3 Output · RH",
+    "inputs": {
+      "h3_context": {
+        "name": "H3 Context"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Positive"
+      },
+      "1": {
+        "name": "Latent"
+      },
+      "2": {
+        "name": "Video VAE"
+      },
+      "3": {
+        "name": "Audio VAE"
+      },
+      "4": {
+        "name": "FPS"
+      },
+      "5": {
+        "name": "Prompt inference output"
+      },
+      "6": {
+        "name": "CLIP"
+      },
+      "7": {
+        "name": "Audio 1"
+      },
+      "8": {
+        "name": "Duration control"
+      }
+    }
+  },
+  "FeiHouEasyH3RHDurationCrop": {
+    "display_name": "FeiHou Easy H3 Digital human/MV Duration Crop · RH",
+    "inputs": {
+      "images": {
+        "name": "Images"
+      },
+      "fps": {
+        "name": "Frame rate (FPS)"
+      },
+      "duration_control": {
+        "name": "Duration control"
+      },
+      "audio": {
+        "name": "Audio"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Images"
+      },
+      "1": {
+        "name": "Frame rate (FPS)"
+      },
+      "2": {
+        "name": "Audio"
+      }
+    }
+  },
+  "FeiHouEasyH3RHPromptPreview": {
+    "display_name": "FeiHou Easy H3 Prompt Preview · RH",
+    "inputs": {
+      "text": {
+        "name": "Prompt inference output"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Text"
+      }
+    }
+  },
+  "FeiHouEasyH3RHSetup": {
+    "display_name": "FeiHou Easy H3 Setup · RH",
+    "inputs": {
+      "h3_bundle": {
+        "name": "H3 model bundle"
+      },
+      "mode": {
+        "name": "Mode",
+        "options": {
+          "image": "I2V or First/Last Frame",
+          "reference": "Reference-to-video"
+        }
+      },
+      "prompt": {
+        "name": "Prompt"
+      },
+      "resolution": {
+        "name": "Resolution"
+      },
+      "aspect_ratio": {
+        "name": "Aspect ratio"
+      },
+      "width": {
+        "name": "Width"
+      },
+      "height": {
+        "name": "Height"
+      },
+      "audio_duration_auto": {
+        "name": "Automatic duration alignment",
+        "options": {
+          "off": "Off",
+          "audio": "Reference audio",
+          "video": "Reference video"
+        }
+      },
+      "seconds": {
+        "name": "Seconds"
+      },
+      "advanced": {
+        "name": "Advanced options"
+      },
+      "force_offload": {
+        "name": "Force offload"
+      },
+      "fps": {
+        "name": "Frame rate (FPS)"
+      },
+      "keyframe_role": {
+        "name": "First/last frame setup",
+        "options": {
+          "first": "First frame priority",
+          "last": "Last frame priority"
+        }
+      },
+      "ref_image_size": {
+        "name": "Reference image size (short edge)",
+        "options": {
+          "match": "Match generation size"
+        }
+      },
+      "reference_mention_mode": {
+        "name": "@ reference mode",
+        "options": {
+          "filename": "By filename",
+          "index": "By index"
+        }
+      },
+      "prompt_optimizer_enabled": {
+        "name": "Prompt optimization"
+      },
+      "prompt_optimizer_api_format": {
+        "name": "API format (auto-detect)"
+      },
+      "prompt_optimizer_api_url": {
+        "name": "API URL (empty = RH)"
+      },
+      "prompt_optimizer_api_key": {
+        "name": "API key (empty = RH)"
+      },
+      "prompt_optimizer_model": {
+        "name": "Model"
+      },
+      "prompt_optimizer_scene_guide": {
+        "name": "Prompt Guide"
+      },
+      "api_config": {
+        "name": "api_config"
+      },
+      "h3_media": {
+        "name": "H3 Media"
+      }
+    },
+    "outputs": {
+      "0": {
+        "name": "Model"
+      },
+      "1": {
+        "name": "Second sampling model"
+      },
+      "2": {
+        "name": "H3 Context"
+      }
+    }
+  },
+  "FeiHouEasyH3RHMedia": {
+    "display_name": "FeiHou Easy H3 Media · RH",
+    "outputs": {
+      "h3_media": {
+        "name": "H3 Media"
+      }
+    }
+  },
+  "FeiHouEasyH3RHContinueOut": {
+    "display_name": "FeiHou Easy H3 Continue Out · RH",
+    "inputs": {
+      "continue_from": {
+        "name": "Continue from"
+      },
+      "production_shot": {
+        "name": "Production shot"
+      }
+    },
+    "outputs": {
+      "images": {
+        "name": "Images"
+      },
+      "audio": {
+        "name": "Audio"
+      },
+      "tail_latent": {
+        "name": "Continuation tail latent"
+      },
+      "fps": {
+        "name": "FPS"
+      }
+    }
+  }
 }

@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.10
+
+- Completes RH Setup and independent Media nodes (9 images / 3 videos / 3 audios), with direct JSON transport, file-aware caching, video/audio trim and preview, and connected-media prompt references. Preserves the original main-node widget/socket order.
+- Adds shot-by-shot continuation and RH Continue Out (接续合并), using the existing external first/second-pass samplers rather than an internal competing sampler. Supports per-shot transition/frame settings, manual previous-video selection, and Video Combine V2 tail sidecars. Keeps the legacy production-plan output and packed-output class IDs for compatibility.
+- Adds read-only H3 core capability probes and clone-scoped patch inventory diagnostics; retains downstream/third-party patches and does not install new attention algorithms.
+- Expands face-refinement square canvas presets from 360P through 1080P, with H3 grid alignment and legacy 512/768 workflow validation.
+- Retains RunningHub uploads, resource/model/LoRA selectors, RH LLM API, RH_OPENAPI_CONFIG, authentication and billing. Custom continuation/ZIP routes still require platform gateway/storage support.
+- Intentionally does not synchronize no-reference-image production shots or HTML asset-path mapping. Standard-edition local unpublished changes remain untouched.
+- Validation: focused CPU/mock regressions, Python/JavaScript syntax, baseline API/resource contract checks and source/installation SHA-256 synchronization. Live RunningHub GPU generation was not performed.
+
 ## v1.4.9
 
 - Adds the RH-compatible Dual Sample and Sample Enhancer nodes, including the `Default Trigger Words` switch on both Sample Enhancer passes. It defaults on without exposing the trigger text in the node UI.

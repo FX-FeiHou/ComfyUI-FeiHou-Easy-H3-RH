@@ -1,5 +1,11 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
+## v1.4.10 — Setup, Media and continuation parity
+
+The independent RH Media node supplies 9 images, 3 videos and 3 audio clips to RH Setup, using the existing RH upload/input transport. Setup preserves RH API settings, RH_OPENAPI_CONFIG, billing and resource selection. Its three original outputs feed the normal external sampling workflow; it does not duplicate sampling controls or run an internal sampler.
+
+Adds RH Continue Out for shot-by-shot continuation, advisory core/patch diagnostics, and expanded face-refinement canvas presets. No-reference-image production shots and HTML asset-path mapping are deliberately excluded. See [RH platform requirements and wiring](docs/rh-feature-parity.md). Live RunningHub GPU execution has not been tested.
+
 ## v1.4.5 additions
 
 Adds RH-specific Production Pack Loader and experimental Face Refine, clean second-pass model extraction, automatic reference-face cropping, and the main prompt input socket.
