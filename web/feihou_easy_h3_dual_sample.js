@@ -2,9 +2,7 @@
 import { app } from "../../scripts/app.js";
 
 const NODES = new Set([
-  "FeiHouEasyH3DualSample1st",
   "FeiHouEasyH3SampleEnhancer1st",
-  "FeiHouEasyH3RHDualSample1st",
   "FeiHouEasyH3RHSampleEnhancer1st",
 ]);
 const DEPENDENT = ["semantic_bridge", "bridge_strength"];
@@ -24,7 +22,7 @@ function sync(node) {
 }
 
 app.registerExtension({
-  name: "FeiHou.EasyH3.DualSample",
+  name: "FeiHou.EasyH3.SampleEnhancer",
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (!NODES.has(nodeData?.name)) return;
     const created = nodeType.prototype.onNodeCreated;

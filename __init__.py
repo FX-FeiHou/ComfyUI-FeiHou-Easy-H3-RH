@@ -13,8 +13,6 @@ from .nodes import (
 from .face_refine import FeiHouEasyH3FaceRefine
 from .production_pack import FeiHouEasyH3ProductionPackLoader
 from .dual_sample import (
-    FeiHouEasyH3DualSample1st,
-    FeiHouEasyH3DualSample2nd,
     FeiHouEasyH3SampleEnhancer1st,
     FeiHouEasyH3SampleEnhancer2nd,
 )
@@ -34,8 +32,6 @@ NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHOutput": FeiHouEasyH3Output,
     "FeiHouEasyH3RHDurationCrop": FeiHouEasyH3DurationCrop,
     "FeiHouEasyH3RHPromptPreview": FeiHouEasyH3PromptPreview,
-    "FeiHouEasyH3RHDualSample1st": FeiHouEasyH3DualSample1st,
-    "FeiHouEasyH3RHDualSample2nd": FeiHouEasyH3DualSample2nd,
     "FeiHouEasyH3RHSampleEnhancer1st": FeiHouEasyH3SampleEnhancer1st,
     "FeiHouEasyH3RHSampleEnhancer2nd": FeiHouEasyH3SampleEnhancer2nd,
     "FeiHouEasyH3RHMedia": FeiHouEasyH3RHMedia,
@@ -56,8 +52,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FeiHouEasyH3RHOutput": "FeiHou Easy H3 输出 · RH",
     "FeiHouEasyH3RHDurationCrop": "FeiHou Easy H3 数字人/MV 时长裁剪 · RH",
     "FeiHouEasyH3RHPromptPreview": "FeiHou Easy H3 提示词预览 · RH",
-    "FeiHouEasyH3RHDualSample1st": "FeiHou Easy H3 Dual Sample 1st（一采）· RH",
-    "FeiHouEasyH3RHDualSample2nd": "FeiHou Easy H3 Dual Sample 2nd（二采）· RH",
     "FeiHouEasyH3RHSampleEnhancer1st": "FeiHou Easy H3 1st Sample Enhancer（一采）· RH",
     "FeiHouEasyH3RHSampleEnhancer2nd": "FeiHou Easy H3 2nd Sample Enhancer（二采）· RH",
     "FeiHouEasyH3RHMedia": "FeiHou Easy H3 Media · RH",
