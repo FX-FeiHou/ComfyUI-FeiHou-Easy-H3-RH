@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.4.12
+
+- Fixes RH Remix second-model `none` fallback: connected second-pass outputs now return a valid clean main-model patcher with only the second-pass LoRA stack. External KJNodes receive a MODEL rather than None. Explicit second models and generic Loader opt-in behavior are preserved.
+- Avoids eager second-pass preparation when the output is not connected; loads the Remix fallback only when the connected second-pass output needs it, then reuses the already loaded clean main-model base. Skips optional memory-feature clones when both switches are off.
+- Reuses reference-image VAE encodings within one Setup context and its trigger/high-resolution rebuilds; changed media or reference dimensions get fresh encodings. Prompt text is still re-encoded for each rebuild.
+- Logs wall times for media/model/VAE loading, LoRA preparation, reference VAE encoding and text encoding, plus conditioning shapes. Bridge errors report the actual input shape and suggest a compatible encoder or disabling the bridge; incompatible embeddings are not reshaped or silently accepted.
+- Preserves RH API/authentication/billing, model/resource selectors, class IDs and widget/socket ordering.
+- Validation: focused CPU/mock regressions, Python/JavaScript syntax and synchronized-file hashes. The repository's legacy production-pack removal test is incompatible with the current v1.4.10 production-pack source. No live RunningHub GPU timing or quality test was performed.
+
 ## v1.4.11
 
 - Removes the standalone RH Dual Sample 1st/2nd nodes from the node menu. RH Sample Enhancer 1st/2nd remain available and continue to use their shared internal sampling implementation.

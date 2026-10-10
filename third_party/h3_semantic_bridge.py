@@ -296,7 +296,11 @@ def apply_bridge(conditioning, config, *, encoding_source="external_unknown", ca
             raise ValueError("Invalid CONDITIONING item")
         native, metadata = item
         if not isinstance(native, torch.Tensor) or native.ndim != 3 or native.shape[-1] != 5120:
-            raise ValueError("Bridge expects raw H3 conditioning [B,T,5120], not projected embeds")
+            actual = tuple(native.shape) if isinstance(native, torch.Tensor) else type(native).__name__
+            raise ValueError(
+                f"Semantic Bridge requires raw H3 conditioning [B,T,5120]; received {actual} "
+                f"from {encoding_source}. Use a compatible H3 text encoder/core or disable semantic_bridge_on."
+            )
         if native.numel() == 0 or not native.is_floating_point() or not torch.isfinite(native).all().item():
             raise ValueError("Bridge input must contain non-empty finite floating point embeddings")
         if RECEIPT_KEY in metadata or any(key in metadata for key in _FOREIGN_RECEIPT_KEYS) or metadata.get("sensenova_h3_distilled"):

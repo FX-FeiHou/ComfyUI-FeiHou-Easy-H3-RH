@@ -24,6 +24,7 @@ import inspect
 import json
 import mimetypes
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -46,6 +47,27 @@ from comfy_extras import nodes_audio as comfy_audio_nodes
 from comfy_api.latest import InputImpl
 
 _LOGGER = logging.getLogger("FeiHouEasyH3")
+
+
+def _rh_timed_call(phase, function, *args, **kwargs):
+    """Log wall time without synchronizing CUDA or exposing prompt/media contents."""
+    started = time.perf_counter()
+    _LOGGER.info("Easy H3 RH: %s started", phase)
+    try:
+        return function(*args, **kwargs)
+    finally:
+        _LOGGER.info("Easy H3 RH: %s wall time %.3fs", phase, time.perf_counter() - started)
+
+
+def _cached_reference_encode(cache, key, encode):
+    """Cache only within one Setup context, including its first/second rebuilds."""
+    if cache is not None and key in cache:
+        _LOGGER.info("Easy H3 RH: reused reference encoding (%s)", key[0])
+        return cache[key]
+    value = encode()
+    if cache is not None:
+        cache[key] = value
+    return value
 
 
 MODE_IMAGE = "image"
@@ -2416,6 +2438,10 @@ class MiniMaxH3Bundle:
 
     def __post_init__(self) -> None:
         self._model = None
+        # ``load_lora_for_models`` clones its input. Keep that unmodified
+        # base so Remix can build the optional second pass without reading the
+        # same transformer weights a second time.
+        self._clean_main_base = None
         self._model_kind = ""
         self._model_name = ""
         self._model_cache_key: tuple[str, Any] | None = None
@@ -2548,6 +2574,7 @@ class MiniMaxH3Bundle:
 
             if self._model is not None:
                 self._model = None
+                self._clean_main_base = None
                 self._model_kind = ""
                 self._model_name = ""
                 self._model_cache_key = None
@@ -2556,10 +2583,11 @@ class MiniMaxH3Bundle:
             if supplied_model is not None:
                 base_model = supplied_model
             elif _is_gguf_file(model_name):
-                base_model = _load_gguf_unet(model_name)
+                base_model = _rh_timed_call("main model read", _load_gguf_unet, model_name)
             else:
-                base_model, = nodes.UNETLoader().load_unet(model_name, "default")
-            self._model = self._apply_loras(base_model)
+                base_model, = _rh_timed_call("main model read", nodes.UNETLoader().load_unet, model_name, "default")
+            self._clean_main_base = base_model
+            self._model = _rh_timed_call("first-pass LoRA preparation", self._apply_loras, base_model)
             self._model_kind = kind
             self._model_name = model_name
             self._model_cache_key = cache_key
@@ -2567,14 +2595,18 @@ class MiniMaxH3Bundle:
             return self._model
 
     def second_sampling_model_for(self, kind: str):
-        """Load the optional second-pass transformer only when its output is used."""
+        """Use an explicit second model, or a clean main-model base plus second LoRAs for Remix."""
         if not self.second_sampling_enabled:
             return None
         kind = "ref2va" if kind == "ref2va" else "fl2va"
         model_name = self.second_ref2va_model_name if kind == "ref2va" else self.second_fl2va_model_name
+        using_remix_fallback = self.remix_loader and _is_none_model(model_name)
+        if using_remix_fallback:
+            model_name = self._model_name_for(kind, allow_fallback=kind != "ref2va")
         if _is_none_model(model_name):
             return None
-        cache_key = ("file", model_name, self.second_lora_stack if self.remix_loader else self.second_sampling_use_lora)
+        cache_key = ("file", model_name, using_remix_fallback,
+                     self.second_lora_stack if self.remix_loader else self.second_sampling_use_lora)
         with self._lock:
             if self._second_model is not None and self._second_model_cache_key == cache_key:
                 model = self._second_model
@@ -2585,10 +2617,19 @@ class MiniMaxH3Bundle:
                     self._second_model_name = ""
                     self._second_model_cache_key = None
                     comfy.model_management.soft_empty_cache()
-                if _is_gguf_file(model_name):
-                    base_model = _load_gguf_unet(model_name)
+                if using_remix_fallback:
+                    _LOGGER.info("Easy H3 RH Remix: no second-pass model selected; reusing the main model with the second-pass LoRA stack")
+                    if self._clean_main_base is not None and self._model_name == model_name:
+                        base_model = self._clean_main_base
+                        _LOGGER.info("Easy H3 RH Remix: reusing the already loaded clean main-model base")
+                    elif _is_gguf_file(model_name):
+                        base_model = _rh_timed_call("second-pass fallback model read", _load_gguf_unet, model_name)
+                    else:
+                        base_model, = _rh_timed_call("second-pass fallback model read", nodes.UNETLoader().load_unet, model_name, "default")
+                elif _is_gguf_file(model_name):
+                    base_model = _rh_timed_call("second-pass model read", _load_gguf_unet, model_name)
                 else:
-                    base_model, = nodes.UNETLoader().load_unet(model_name, "default")
+                    base_model, = _rh_timed_call("second-pass model read", nodes.UNETLoader().load_unet, model_name, "default")
                 clean_base = base_model.clone()
                 model = self._apply_loras(base_model, self.second_lora_stack) if self.remix_loader else (self._apply_loras(base_model) if self.second_sampling_use_lora else base_model)
                 model.set_attachments("feihou_h3_clean_second_base", clean_base)
@@ -2781,6 +2822,8 @@ def _clone_h3_model_with_memory_features(model, *, force_offload: bool, streamed
     """Attach clone-scoped memory features and advisory diagnostics; retain other patches."""
     from .h3_diagnostics import diagnose, sampling_diagnostics
     diagnose(model, "before Easy H3 RH features")
+    if not force_offload and not streamed_attention:
+        return model
     try:
         patched = model.clone()
     except Exception as exc:
@@ -3021,9 +3064,9 @@ class FeiHouEasyH3Loader:
              second_ref2va_model=NONE_MODEL, second_sampling_use_lora=True, lora_stack=None):
         if _is_none_model(fl2va_model) and _is_none_model(ref2va_model):
             raise ValueError("Select at least one MiniMax H3 transformer: FL2VA or REF2VA.")
-        clip = _load_text_encoder(text_encoder)
-        video_vae_obj, = nodes.VAELoader().load_vae(video_vae)
-        audio_vae_obj, = nodes.VAELoader().load_vae(audio_vae)
+        clip = _rh_timed_call("text encoder read", _load_text_encoder, text_encoder)
+        video_vae_obj, = _rh_timed_call("video VAE read", nodes.VAELoader().load_vae, video_vae)
+        audio_vae_obj, = _rh_timed_call("audio VAE read", nodes.VAELoader().load_vae, audio_vae)
         return (MiniMaxH3Bundle(
             fl2va_model_name=fl2va_model,
             ref2va_model_name=ref2va_model,
@@ -3087,9 +3130,9 @@ class FeiHouEasyH3RemixLoader:
     def load(self, remix_model, text_encoder, video_vae, audio_vae, second_sampling_model=NONE_MODEL, first_pass_lora_stack=None, second_pass_lora_stack=None):
         if _is_none_model(remix_model):
             raise ValueError("Select a Remix main model")
-        clip = _load_text_encoder(text_encoder)
-        video_vae_obj, = nodes.VAELoader().load_vae(video_vae)
-        audio_vae_obj, = nodes.VAELoader().load_vae(audio_vae)
+        clip = _rh_timed_call("text encoder read", _load_text_encoder, text_encoder)
+        video_vae_obj, = _rh_timed_call("video VAE read", nodes.VAELoader().load_vae, video_vae)
+        audio_vae_obj, = _rh_timed_call("audio VAE read", nodes.VAELoader().load_vae, audio_vae)
         first_stack = _normalize_lora_stack(first_pass_lora_stack)
         second_stack = _normalize_lora_stack(second_pass_lora_stack)
         return (MiniMaxH3Bundle(
@@ -3102,7 +3145,7 @@ class FeiHouEasyH3RemixLoader:
             video_vae=video_vae_obj,
             audio_vae=audio_vae_obj,
             lora_stack=first_stack,
-            second_sampling_enabled=not _is_none_model(second_sampling_model),
+            second_sampling_enabled=True,
             second_fl2va_model_name=second_sampling_model,
             second_ref2va_model_name=second_sampling_model,
             second_sampling_use_lora=bool(second_stack),
@@ -3454,7 +3497,7 @@ def _empty_image_conditioning(bundle, prompt, width, height, length, first_frame
     return conditioning, latent
 
 
-def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False):
+def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None):
     latent, frame_count = h3._empty_av_latent(width, height, length)
     ref_items = []
     ref_blocks = []
@@ -3490,7 +3533,11 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         resized = h3._resize(image[:1], target_w, target_h, "disabled")
         ref_items.append({"type": "image", "data": resized})
         if not text_only:
-            ref_blocks.append({"kind": "image", "latent_h": target_h // 16, "latent_w": target_w // 16, "latent": bundle.video_vae.encode(resized)})
+            encoded = _cached_reference_encode(
+                reference_cache, ("image", id(image), target_w, target_h),
+                lambda: _rh_timed_call("reference image VAE encode", bundle.video_vae.encode, resized),
+            )
+            ref_blocks.append({"kind": "image", "latent_h": target_h // 16, "latent_w": target_w // 16, "latent": encoded})
         tag = f"<Picture {picture_ordinal}>"
         tag_by_input[item.input_index] = tag
         kind_tags["image"][picture_ordinal] = tag
@@ -3574,8 +3621,12 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         kind_tags,
     )
 
-    tokens = bundle.clip.tokenize(resolved_prompt, minimax_ref_items=ref_items)
-    conditioning = bundle.clip.encode_from_tokens_scheduled(tokens)
+    tokens = _rh_timed_call("reference tokenization", bundle.clip.tokenize,
+                           resolved_prompt, minimax_ref_items=ref_items)
+    conditioning = _rh_timed_call("reference text encode", bundle.clip.encode_from_tokens_scheduled, tokens)
+    shapes = [tuple(item[0].shape) if isinstance(item[0], torch.Tensor) else type(item[0]).__name__
+              for item in conditioning]
+    _LOGGER.info("Easy H3 RH: encoder=%s conditioning_shapes=%s", bundle.clip_name, shapes)
     conditioning = node_helpers.conditioning_set_values(conditioning, {"minimax_refs": ref_blocks})
     return conditioning, latent, preview_prompt
 
@@ -3767,7 +3818,7 @@ class FeiHouEasyH3:
             raise ValueError(f"Unsupported mode: {mode}")
         keyframe_role = _canonical_keyframe_role(keyframe_role)
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
-        items = cls._collect_media(kwargs, extra_pnginfo, unique_id)
+        items = _rh_timed_call("media load", cls._collect_media, kwargs, extra_pnginfo, unique_id)
         # Decode/crop each video once; duration and conditioning share these frames.
         items = [_MediaInput(item.input_index, item.media_type,
                              _trim_reference_video(item.value, item.audio_trim), item.filename, "")
@@ -3827,10 +3878,13 @@ class FeiHouEasyH3:
         if second_sampling_requested:
             second_model_name = h3_bundle.second_ref2va_model_name if second_kind == "ref2va" else h3_bundle.second_fl2va_model_name
             if _is_none_model(second_model_name):
-                model_label = "REF2VA" if second_kind == "ref2va" else "FL2VA"
-                raise ValueError(f"“自定义二采模型”已开启，但未选择 {model_label} 二采模型。请选择模型，或关闭该开关。")
+                if not h3_bundle.remix_loader:
+                    model_label = "REF2VA" if second_kind == "ref2va" else "FL2VA"
+                    raise ValueError(f"“自定义二采模型”已开启，但未选择 {model_label} 二采模型。请选择模型，或关闭该开关。")
+                _LOGGER.info("Easy H3 RH Remix: second output connected; main-model fallback requested")
             second_sampling_active = True
 
+        reference_cache = {}
         if mode == MODE_REFERENCE:
             if not items:
                 raise ValueError(
@@ -3849,10 +3903,10 @@ class FeiHouEasyH3:
             if counts["image"] == 0 and counts["video"] == 0:
                 raise ValueError("Reference mode needs an image or video in addition to audio")
             model = h3_bundle.model_for("ref2va")
-            conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only)
+            conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only, reference_cache=reference_cache)
             highres_rebuilder = H3HighresRebuilder(
                 build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _r=ref_image_size, _i=tuple(items), _t=reference_text_only:
-                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t)[:2],
+                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t, reference_cache=reference_cache)[:2],
                 canvas_dependent=ref_size_is_match,
             )
         else:
@@ -3865,11 +3919,11 @@ class FeiHouEasyH3:
             # I2V/FL2V keeps its original path and no UI switch is exposed.
             if second_sampling_active and items:
                 conditioning, latent, prompt_preview = _reference_conditioning(
-                    h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only
+                    h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only, reference_cache=reference_cache
                 )
                 highres_rebuilder = H3HighresRebuilder(
                     build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _r=ref_image_size, _i=tuple(items), _t=reference_text_only:
-                        _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t)[:2],
+                        _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t, reference_cache=reference_cache)[:2],
                     canvas_dependent=ref_size_is_match,
                 )
             else:
