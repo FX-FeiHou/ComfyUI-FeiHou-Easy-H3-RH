@@ -2401,7 +2401,8 @@ def _load_gguf_unet(model_name: str):
 
 def _load_text_encoder(text_encoder: str):
     if not _is_gguf_file(text_encoder):
-        return nodes.CLIPLoader().load_clip(text_encoder, "minimax", "default")[0]
+        clip = nodes.CLIPLoader().load_clip(text_encoder, "minimax", "default")[0]
+        return _validate_h3_text_encoder(clip, text_encoder)
 
     loader_class = _registered_node_class("CLIPLoaderGGUF", "CLIPLoaderGGUFAdvanced")
     if loader_class is None:
@@ -2411,9 +2412,36 @@ def _load_text_encoder(text_encoder: str):
         )
     loader = loader_class()
     try:
-        return loader.load_clip(text_encoder, "minimax")[0]
+        clip = loader.load_clip(text_encoder, "minimax")[0]
     except TypeError:
-        return loader.load_clip(text_encoder, type="minimax")[0]
+        clip = loader.load_clip(text_encoder, type="minimax")[0]
+    return _validate_h3_text_encoder(clip, text_encoder)
+
+
+def _validate_h3_text_encoder(clip: Any, text_encoder: str):
+    """Reject encoders whose output contract belongs to another MiniMax model.
+
+    Music3 is also accepted by ComfyUI's ``minimax`` CLIP loader, but it is an
+    autoregressive audio encoder.  Its frame hidden state is concatenated to
+    32768 features and cannot be consumed by H3's 5120-feature Qwen bridge.
+    Detect it immediately after loading so Setup fails in milliseconds instead
+    of spending several minutes generating Music3 audio-like hidden states.
+    """
+    model = getattr(clip, "cond_stage_model", None)
+    candidates = [model, getattr(model, "model", None), getattr(model, "clip", None)]
+    identity = " ".join(
+        f"{type(value).__module__}.{type(value).__name__}"
+        for value in candidates
+        if value is not None
+    ).lower()
+    if "minimax_music" in identity or "music3" in identity:
+        raise ValueError(
+            "Easy H3 RH requires the MiniMax H3 Qwen3-VL-32B text encoder "
+            "(raw conditioning width 5120). The selected file is a MiniMax "
+            "Music3 audio encoder and produces width 32768. Select the H3 "
+            "Qwen3-VL-32B encoder; renamed files are supported."
+        )
+    return clip
 
 
 @dataclass
@@ -3626,7 +3654,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     conditioning = _rh_timed_call("reference text encode", bundle.clip.encode_from_tokens_scheduled, tokens)
     shapes = [tuple(item[0].shape) if isinstance(item[0], torch.Tensor) else type(item[0]).__name__
               for item in conditioning]
-    _LOGGER.info("Easy H3 RH: encoder=%s conditioning_shapes=%s", bundle.clip_name, shapes)
+    _LOGGER.info("Easy H3 RH: encoder=%s conditioning_shapes=%s", getattr(bundle, "clip_name", "connected"), shapes)
     conditioning = node_helpers.conditioning_set_values(conditioning, {"minimax_refs": ref_blocks})
     return conditioning, latent, preview_prompt
 

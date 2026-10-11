@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.13
+
+- Fails fast when the RH loader receives a MiniMax Music3 audio encoder. Music3 produces 32768-wide autoregressive audio states and cannot provide H3's raw 5120-wide Qwen3-VL conditioning; the error now appears during loading instead of after a long Setup/Enhancer encode.
+- Keeps renamed H3 text-encoder files supported and directs users to the compatible Qwen3-VL-32B encoder.
+- Fixes RH Face Refine's diagnostic path when the context adapter has no `clip_name`; face refinement can proceed without the logging-only `SimpleNamespace` attribute error.
+- Validation: focused CPU/mock regressions, Python/JSON syntax, and synchronized source/install hashes. Live RunningHub GPU generation remains untested.
+
 ## v1.4.12
 
 - Fixes RH Remix second-model `none` fallback: connected second-pass outputs now return a valid clean main-model patcher with only the second-pass LoRA stack. External KJNodes receive a MODEL rather than None. Explicit second models and generic Loader opt-in behavior are preserved.

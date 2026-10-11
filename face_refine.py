@@ -335,7 +335,12 @@ class FeiHouEasyH3FaceRefine:
         mm.soft_empty_cache()
         refined = crops.cpu().clone()
         weights = torch.zeros(len(crops))
-        source_bundle = SimpleNamespace(clip=context.clip, video_vae=context.video_vae, audio_vae=context.audio_vae)
+        source_bundle = SimpleNamespace(
+            clip=context.clip,
+            video_vae=context.video_vae,
+            audio_vae=context.audio_vae,
+            clip_name=getattr(context, 'clip_name', 'connected'),
+        )
         # No new attention or per-frame model patches: inherit only what the user wired.
         working_model = model.clone()
         segment_count = 0
