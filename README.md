@@ -1,5 +1,15 @@
 # ComfyUI-FeiHou-Easy-H3-RH
 
+## v1.4.14：MOD 参考接入
+
+RH 主节点和 Setup 新增可选 `refmods` 接口。使用已有的 **Load H3 RefMods** 节点（来自 `ComfyUI-MiniMaxH3Mod`），把它的 `mods` 输出接入 `refmods`，并将生成模式设为“参考生视频”。无需连接 MOD 的旧工作流继续按原方式使用。
+
+- 支持图片、视频和音频 MOD，沿用上游加载器的强度、份数与组件选择；采样使用 MOD 自带的参考 latent。
+- 提示词编辑器输入 `@` 可选择 MOD；同类媒体中 MOD 排在前面，普通素材随后编号。例如一个视频 MOD 与一段上传视频分别是 `<Video 1>` 和 `<Video 2>`。MOD 不占用原有的 9 图 / 3 视频 / 3 音频槽位。
+- Output 末尾增加 `reference_map`（RefMod 编号对应表），可连接提示词预览节点查看实际编号。一采触发词重建及二采分辨率重建会保留 MOD 数据。
+- MOD 文件由上游加载器在执行服务器读取；RunningHub 环境需要提供该加载器和对应 MOD 资源。Easy H3 普通素材继续使用 RH 原有的上传、资源选择与 JSON 传输方式。
+- 本次仅加入 MOD 相关功能，保留 RH 提示词 API、鉴权计费及现有工作流接口顺序。
+
 ## v1.4.10：Setup / Media 与接续补齐
 
 - 新增完整的 `FeiHou Easy H3 Media · RH` 和 `FeiHou Easy H3 Setup · RH`。连线：Media 的 `h3_media` → Setup；Loader 的 `h3_bundle` → Setup；Setup 的原有 Model / 二采模型 / H3 Context 继续接原工作流。

@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.4.14
+
+- Adds optional `H3_REF_MODS` inputs to RH Main and Setup. Connect the upstream Load H3 RefMods node and use reference mode; image/video/audio MODs retain their native reference latents and strength processing.
+- Adds MOD references to the prompt editor's `@` menu, preserves reference bindings across workflow saves, and appends an Output `reference_map` string without moving existing sockets. MODs lead numbering within each media type; gallery media follow and keep their existing 9-image/3-video/3-audio limits.
+- Preserves MOD presentation and latent blocks during trigger-word and second-pass canvas rebuilds. Prompt optimization receives the MOD reference map through the existing RH platform or custom API path; RH billing/authentication, selectors, uploads and reference-image encoding cache are retained.
+- Scope: MOD integration only. No Standard-edition edits, continuation-save changes, local LLM backend, LoRA mode restoration or attention-patch changes.
+- Validation: 23 CPU integration checks including real upstream MOD/bundle round trips, isolated metadata HTTP route, RH JSON media transport and mocked platform/custom APIs; JavaScript reference/serialization checks. Live RunningHub GPU generation remains untested.
+
 ## v1.4.13
 
 - Fails fast when the RH loader receives a MiniMax Music3 audio encoder. Music3 produces 32768-wide autoregressive audio states and cannot provide H3's raw 5120-wide Qwen3-VL conditioning; the error now appears during loading instead of after a long Setup/Enhancer encode.
