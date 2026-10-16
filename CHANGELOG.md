@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.15
+
+- Adds the saved RefMod filmmaking prompt rule, unchanged, as the read-only built-in `refmod` template (`RefMod`) for RH Main and Setup. Existing custom rules are preserved.
+- Restores prompt-rule names after R / Refresh Node Definitions without changing RunningHub API, authentication, billing, or media transport.
+
 ## v1.4.14
 
 - Adds optional `H3_REF_MODS` inputs to RH Main and Setup. Connect the upstream Load H3 RefMods node and use reference mode; image/video/audio MODs retain their native reference latents and strength processing.

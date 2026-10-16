@@ -26,6 +26,7 @@ const DIALOGUE_CLASS = "h3-dialogue-block";
 const PROMPT_VIEW_STRUCTURED = "structured";
 const PROMPT_VIEW_RAW = "raw";
 const PROMPT_GUIDES = [
+    { value: "refmod", zh: "RefMod", en: "RefMod" },
     { value: "none", zh: "\u4ec5\u901a\u7528\u65b9\u6848", en: "General only" },
     { value: "r2va_enhanced", zh: "R2VA \u52a0\u5f3a\u7248", en: "R2VA Enhanced" },
     { value: "3d_animation_short", zh: "3D \u52a8\u753b\u77ed\u7247", en: "3D Animation Short" },
@@ -6908,6 +6909,14 @@ app.registerExtension({
     // RH change --end--
     setup() {
         install();
+    },
+    refreshComboInNodes() {
+        // Restore rule names after ComfyUI replaces combo options with backend IDs.
+        // RH uses bundled rules and node API fields, without Standard settings.
+        for (const node of promptOptimizerNodes()) {
+            localizeComboWidget(getWidget(node, "prompt_optimizer_scene_guide"));
+            node.setDirtyCanvas?.(true, true);
+        }
     },
     beforeRegisterNodeDef(nodeType, nodeData) {
         installRefmodMentionRefresh(nodeType, nodeData);
