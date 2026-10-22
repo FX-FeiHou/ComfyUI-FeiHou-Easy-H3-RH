@@ -214,8 +214,12 @@
         "name": "Automatic duration alignment",
         "options": {
           "off": "Off",
-          "audio": "Reference audio",
-          "video": "Reference video"
+          "video1": "Align Video 1",
+          "video2": "Align Video 2",
+          "video3": "Align Video 3",
+          "audio1": "Align Audio 1",
+          "audio2": "Align Audio 2",
+          "audio3": "Align Audio 3"
         }
       },
       "seconds": {
@@ -314,7 +318,7 @@
         "name": "CLIP"
       },
       "7": {
-        "name": "Audio 1"
+        "name": "Audio output"
       },
       "8": {
         "name": "Duration control"
@@ -394,8 +398,12 @@
         "name": "Automatic duration alignment",
         "options": {
           "off": "Off",
-          "audio": "Reference audio",
-          "video": "Reference video"
+          "video1": "Align Video 1",
+          "video2": "Align Video 2",
+          "video3": "Align Video 3",
+          "audio1": "Align Audio 1",
+          "audio2": "Align Audio 2",
+          "audio3": "Align Audio 3"
         }
       },
       "seconds": {

@@ -2933,6 +2933,8 @@ class MiniMaxH3Context:
     audio_vae: Any
     fps: float
     prompt_preview: str
+    # Audio exposed by the Output node: Audio 1 when alignment is off,
+    # otherwise the trimmed audio of the selected Video/Audio source.
     audio_1: Any = None
     duration_control: Any = None
     reference_image_1: Any = None
@@ -3391,13 +3393,50 @@ def _trim_reference_audio(audio: Mapping, trim_range: Any) -> Mapping:
 
 
 
+DURATION_ALIGNMENT_OPTIONS = ("off", "video1", "video2", "video3", "audio1", "audio2", "audio3")
+
+
 def _duration_alignment(value: Any) -> str:
-    """Keep the legacy Boolean input compatible without changing its slot."""
-    if value is True or str(value).strip().lower() in {"true", "1", "audio", "参考音频对齐"}:
-        return "audio"
-    if str(value).strip().lower() in {"video", "参考视频对齐"}:
-        return "video"
+    """Normalize current and legacy duration-alignment values."""
+    if value is True:
+        return "audio1"
+    if value is False or value is None:
+        return "off"
+    compact = "".join(str(value).strip().lower().split()).replace("_", "").replace("-", "")
+    if compact in {"", "off", "none", "false", "0", "关闭", "关闭对齐"}:
+        return "off"
+    legacy = {
+        "true": "audio1", "1": "audio1",
+        "audio": "audio1", "参考音频对齐": "audio1", "referenceaudio": "audio1",
+        "video": "video1", "参考视频对齐": "video1", "referencevideo": "video1",
+    }
+    if compact in legacy:
+        return legacy[compact]
+    match = re.fullmatch(r"(?:对齐|align)?(video|视频|audio|音频)([123])", compact)
+    if match:
+        kind = "video" if match.group(1) in {"video", "视频"} else "audio"
+        return f"{kind}{match.group(2)}"
     return "off"
+
+
+def _alignment_source(alignment: str) -> tuple[str, int] | None:
+    match = re.fullmatch(r"(video|audio)([123])", str(alignment))
+    return (match.group(1), int(match.group(2))) if match else None
+
+
+def _alignment_media(items: list[_MediaInput], alignment: str) -> tuple[str, int, _MediaInput]:
+    source = _alignment_source(alignment)
+    if source is None:
+        raise ValueError(f"未知的自动时长对齐方式 / Unknown duration alignment: {alignment}")
+    media_type, ordinal = source
+    matches = [item for item in items if item.media_type == media_type]
+    if len(matches) < ordinal:
+        label = "视频" if media_type == "video" else "音频"
+        raise ValueError(
+            f"已选择对齐{label} {ordinal}，但未加载参考{label} {ordinal} / "
+            f"Reference {media_type} {ordinal} is missing"
+        )
+    return media_type, ordinal, matches[ordinal - 1]
 
 
 def _trim_reference_video(value: Any, trim_range: Any) -> Mapping:
@@ -3423,28 +3462,43 @@ def _trim_reference_video(value: Any, trim_range: Any) -> Mapping:
     return {"images": frames[first:last], "audio": audio, "fps": fps}
 
 
-def _reference_video_duration(items: list[_MediaInput]) -> float:
-    for item in items:
-        if item.media_type == "video":
-            frames, _, fps = _video_parts(item.value)
-            return int(frames.shape[0]) / fps
-    raise ValueError("已选择参考视频对齐，但未加载参考视频 1 / Reference video 1 is missing")
+def _reference_video_duration(items: list[_MediaInput], ordinal: int = 1) -> float:
+    _, _, item = _alignment_media(items, f"video{ordinal}")
+    frames, _, fps = _video_parts(item.value)
+    return int(frames.shape[0]) / fps
 
-def _reference_audio_duration(items: list[_MediaInput]) -> float:
-    """Return the trimmed duration of Audio 1 for digital-human/MV timing."""
-    for item in items:
-        if item.media_type != "audio":
-            continue
+
+def _reference_audio_duration(items: list[_MediaInput], ordinal: int = 1) -> float:
+    """Return the trimmed duration of the selected audio reference."""
+    _, _, item = _alignment_media(items, f"audio{ordinal}")
+    if not isinstance(item.value, Mapping) or "waveform" not in item.value:
+        raise ValueError("数字人/MV 自动时长需要有效的 AUDIO 参考音频")
+    trimmed = _trim_reference_audio(item.value, item.audio_trim)
+    waveform = trimmed.get("waveform")
+    sample_rate = float(trimmed.get("sample_rate") or 0)
+    total_samples = int(waveform.shape[-1]) if waveform is not None and getattr(waveform, "ndim", 0) else 0
+    if sample_rate <= 0 or total_samples <= 0:
+        raise ValueError("数字人/MV 自动时长无法读取所选音频的有效时长")
+    return total_samples / sample_rate
+
+
+def _alignment_duration(items: list[_MediaInput], alignment: str) -> float:
+    media_type, ordinal, _ = _alignment_media(items, alignment)
+    return (_reference_video_duration(items, ordinal) if media_type == "video"
+            else _reference_audio_duration(items, ordinal))
+
+
+def _alignment_audio(items: list[_MediaInput], alignment: str) -> Any:
+    """Return the audio emitted by the Output node for the selected source."""
+    if alignment == "off":
+        return _first_reference_audio(items)
+    media_type, _, item = _alignment_media(items, alignment)
+    if media_type == "audio":
         if not isinstance(item.value, Mapping) or "waveform" not in item.value:
-            raise ValueError("数字人/MV 自动时长需要有效的 AUDIO 参考音频")
-        trimmed = _trim_reference_audio(item.value, item.audio_trim)
-        waveform = trimmed.get("waveform")
-        sample_rate = float(trimmed.get("sample_rate") or 0)
-        total_samples = int(waveform.shape[-1]) if waveform is not None and getattr(waveform, "ndim", 0) else 0
-        if sample_rate <= 0 or total_samples <= 0:
-            raise ValueError("数字人/MV 自动时长无法读取 Audio 1 的有效时长")
-        return total_samples / sample_rate
-    raise ValueError("数字人/MV 自动时长已开启，但未加载 Audio 1 参考音频")
+            raise ValueError("Audio references must be AUDIO payloads")
+        return _trim_reference_audio(item.value, item.audio_trim)
+    _, audio, _ = _video_parts(item.value)
+    return audio
 
 
 def _first_reference_audio(items: list[_MediaInput]) -> Any:
@@ -3742,7 +3796,7 @@ class FeiHouEasyH3:
                 "aspect_ratio": (list(ASPECT_RATIOS), {"default": ASPECT_WIDESCREEN}),
                 "width": ("INT", {"default": 1344, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
                 "height": ("INT", {"default": 768, "min": 32, "max": nodes.MAX_RESOLUTION, "step": 32}),
-                "audio_duration_auto": (["off", "audio", "video"], {"default": "off", "tooltip": "自动时长对齐：使用参考音频 1 或参考视频 1 截取后的实际时长。"}),
+                "audio_duration_auto": (list(DURATION_ALIGNMENT_OPTIONS), {"default": "off", "tooltip": "自动时长对齐：按所选参考视频/音频的时间截取时长生成；对齐视频时输出该视频的音频，对齐音频时输出该音频。关闭时保持原逻辑。"}),
                 "seconds": ("FLOAT", {"default": 10.0, "min": MIN_SECONDS, "max": MAX_SECONDS, "step": 0.1}),
                 "advanced": ("BOOLEAN", {"default": False}),
                 "fps": ("FLOAT", {"default": 24.0, "min": 1.0, "max": 120.0, "step": 1.0}),
@@ -3902,8 +3956,7 @@ class FeiHouEasyH3:
         audio_duration_enabled = alignment != "off"
         requested_audio_seconds = 0.0
         if audio_duration_enabled:
-            requested_audio_seconds = (_reference_video_duration(items) if alignment == "video"
-                                       else _reference_audio_duration(items))
+            requested_audio_seconds = _alignment_duration(items, alignment)
             seconds = requested_audio_seconds
         seconds = min(MAX_SECONDS, max(MIN_SECONDS, float(seconds)))
         # MiniMax H3 accepts only 5 + 17N frames.  Automatic audio timing
@@ -4041,7 +4094,9 @@ class FeiHouEasyH3:
             prompt_preview=prompt_preview,
             reference_image_1=next((item.value[:1, ..., :3].detach().cpu().clone()
                                     for item in items if item.media_type == "image"), None),
-            audio_1=_first_reference_audio(items),
+            # The Output node emits the selected alignment source's audio;
+            # alignment "off" keeps the legacy Audio 1 behaviour.
+            audio_1=_alignment_audio(items, alignment),
             duration_control=H3DurationControl(
                 enabled=audio_duration_enabled,
                 target_seconds=requested_audio_seconds,
@@ -4093,17 +4148,17 @@ class FeiHouEasyH3Output:
 
 
 class FeiHouEasyH3DurationCrop:
-    """Restore the exact Audio 1 duration after H3's required frame alignment.
+    """Restore the selected alignment source's duration after H3 frame alignment.
 
     The control payload is disabled in ordinary workflows, so this node becomes
-    a pure pass-through unless Digital human/MV auto duration is enabled.
+    a pure pass-through unless automatic duration alignment is enabled.
     """
 
     CATEGORY = "FeiHou Easy H3"
     FUNCTION = "crop"
     RETURN_TYPES = ("IMAGE", "FLOAT", "AUDIO")
     RETURN_NAMES = ("images", "fps", "audio")
-    DESCRIPTION = "Uses the Easy H3 duration-control output to restore the exact Audio 1 duration. Disabled control passes media through unchanged."
+    DESCRIPTION = "Uses the Easy H3 duration-control output to restore the selected video/audio duration. Disabled control passes media through unchanged."
 
     @classmethod
     def INPUT_TYPES(cls):

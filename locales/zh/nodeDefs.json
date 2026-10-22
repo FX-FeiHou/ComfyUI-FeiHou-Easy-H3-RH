@@ -223,8 +223,12 @@
         "name": "自动时长对齐",
         "options": {
           "off": "关闭",
-          "audio": "参考音频对齐",
-          "video": "参考视频对齐"
+          "video1": "对齐Video1",
+          "video2": "对齐Video2",
+          "video3": "对齐Video3",
+          "audio1": "对齐Audio1",
+          "audio2": "对齐Audio2",
+          "audio3": "对齐Audio3"
         }
       },
       "seconds": {
@@ -323,7 +327,7 @@
         "name": "CLIP"
       },
       "7": {
-        "name": "Audio 1 音频"
+        "name": "音频输出"
       },
       "8": {
         "name": "时长控制"
@@ -403,8 +407,12 @@
         "name": "自动时长对齐",
         "options": {
           "off": "关闭",
-          "audio": "参考音频对齐",
-          "video": "参考视频对齐"
+          "video1": "对齐Video1",
+          "video2": "对齐Video2",
+          "video3": "对齐Video3",
+          "audio1": "对齐Audio1",
+          "audio2": "对齐Audio2",
+          "audio3": "对齐Audio3"
         }
       },
       "seconds": {

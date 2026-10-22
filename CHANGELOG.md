@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.4.16
+
+- Expands automatic duration alignment in RH Main/Setup to Video 1-3 and Audio 1-3, using each selected source's trimmed duration.
+- Changes the Output node's audio output to emit the selected alignment source's audio: the video soundtrack when aligning to a video, or the trimmed audio when aligning to an audio reference. Off keeps the previous Audio 1 behaviour.
+- Keeps legacy `audio`/`video`, Boolean and localized alignment values working in saved workflows. RunningHub API, authentication, billing and media transport are unchanged.
+
 ## v1.4.15
 
 - Adds the saved RefMod filmmaking prompt rule, unchanged, as the read-only built-in `refmod` template (`RefMod`) for RH Main and Setup. Existing custom rules are preserved.
