@@ -85,6 +85,43 @@ function openRhLoraPicker(node, onSelect) {
     window.parent.handleOpenResourceModal("choice", "LORA");
 }
 
+// RH's canvas event bridge delivers pointerdown to custom widgets but not a
+// reliable pointerup, so rgthree's onClick (down + up on the same part) never
+// fires there. On RH, rows react on pointerdown and edit numbers in a DOM input
+// instead of window.prompt / LiteGraph's prompt, which the embedded page blocks.
+function editNumberInPlace(event, value, onCommit) {
+    document.querySelector(".fh-h3-rh-lora-number")?.remove();
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.05";
+    input.value = String(value);
+    input.className = "fh-h3-rh-lora-number";
+    const x = Number(event?.clientX) || window.innerWidth / 2;
+    const y = Number(event?.clientY) || window.innerHeight / 2;
+    Object.assign(input.style, {
+        position: "fixed", left: `${Math.max(4, x - 45)}px`, top: `${Math.max(4, y - 14)}px`,
+        width: "90px", height: "28px", zIndex: "100000", fontSize: "14px", textAlign: "center",
+        background: "#222", color: "#f5f5f5", border: "1px solid #4a9eff", borderRadius: "4px",
+    });
+    let done = false;
+    const finish = (commit) => {
+        if (done) return;
+        done = true;
+        if (commit) onCommit(input.value);
+        input.remove();
+    };
+    input.addEventListener("keydown", (keyEvent) => {
+        keyEvent.stopPropagation();
+        if (keyEvent.key === "Enter") finish(true);
+        if (keyEvent.key === "Escape") finish(false);
+    });
+    input.addEventListener("pointerdown", (pointerEvent) => pointerEvent.stopPropagation());
+    input.addEventListener("blur", () => finish(true));
+    document.body.append(input);
+    // Focus after the canvas finishes handling this pointerdown, or it steals focus back.
+    setTimeout(() => { input.focus(); input.select(); }, 0);
+}
+
 function normalizeLoraValue(value, defaultBypass = true) {
     if (!value || typeof value !== "object" || Array.isArray(value) || !("lora" in value)) return null;
     return {
@@ -363,9 +400,13 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         this.hitAreas = {
             toggle: {bounds: [0, 0], onDown: this.onToggleDown},
             bypass: {bounds: [0, 0], onDown: this.onBypassDown},
-            lora: {bounds: [0, 0], onClick: this.onLoraClick},
+            lora: isRhPlatform()
+                ? {bounds: [0, 0], onDown: this.onLoraClick}
+                : {bounds: [0, 0], onClick: this.onLoraClick},
             strengthDec: {bounds: [0, 0], onDown: this.onStrengthDecDown},
-            strengthVal: {bounds: [0, 0], onClick: this.onStrengthValUp},
+            strengthVal: isRhPlatform()
+                ? {bounds: [0, 0], onDown: this.onStrengthValUp}
+                : {bounds: [0, 0], onClick: this.onStrengthValUp},
             strengthInc: {bounds: [0, 0], onDown: this.onStrengthIncDown},
             strengthAny: {bounds: [0, 0], onMove: this.onStrengthAnyMove},
         };
@@ -441,7 +482,8 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
         // Drag only on the numeric value.  This keeps the arrow buttons
         // reliable on RH's canvas event bridge instead of treating a click on
         // an arrow as a strength drag.
-        this.hitAreas.strengthAny.bounds = numberText;
+        // On RH the value opens an input on pointerdown, so there is no drag.
+        this.hitAreas.strengthAny.bounds = isRhPlatform() ? [0, 0] : numberText;
         const loraWidth = Math.max(0, leftArrow[0] - innerMargin - posX);
         ctx.textAlign = "left";
         ctx.textBaseline = "middle";
@@ -472,6 +514,7 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
     onLoraClick(event, pos, node) {
         node.showLoraChooser(event, (value) => { this.value.lora = value || null; });
         this.cancelMouseDown();
+        return true;
     }
 
     onStrengthDecDown(event, pos, node) {
@@ -497,12 +540,9 @@ class FeiHouEasyH3LoraWidget extends RgthreeBaseWidget {
             const number = Number(value);
             if (Number.isFinite(number)) this.setStrength(number, node);
         };
-        // RunningHub's embedded canvas does not reliably open the legacy
-        // LiteGraph prompt. Use the browser numeric prompt there; the native
-        // field supports direct typing and keyboard arrow increments.
         if (isRhPlatform()) {
-            const value = globalThis.prompt?.(t("输入 LoRA 强度", "Enter LoRA strength"), String(this.value.strength));
-            if (value !== null && value !== undefined) apply(value);
+            editNumberInPlace(event, this.value.strength, apply);
+            this.cancelMouseDown();
             return true;
         }
         app.canvas.prompt(t("强度", "Value"), this.value.strength, apply, event);

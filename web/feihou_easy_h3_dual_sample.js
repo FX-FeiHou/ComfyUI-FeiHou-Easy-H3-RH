@@ -1,10 +1,7 @@
 // Grey out the semantic-bridge options while the bridge switch is off.
 import { app } from "../../scripts/app.js";
 
-const NODES = new Set([
-  "FeiHouEasyH3SampleEnhancer1st",
-  "FeiHouEasyH3RHSampleEnhancer1st",
-]);
+const NODES = new Set(["FeiHouEasyH3RHSampleEnhancer1st"]);
 const DEPENDENT = ["semantic_bridge", "bridge_strength"];
 
 function sync(node) {
@@ -22,7 +19,13 @@ function sync(node) {
 }
 
 app.registerExtension({
-  name: "FeiHou.EasyH3.SampleEnhancer",
+  name: "FeiHou.EasyH3RH.SampleEnhancer",
+  // RH change --start--
+  rh: {
+    type: "nodes",
+    nodes: ["FeiHouEasyH3RHSampleEnhancer1st"],
+  },
+  // RH change --end--
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (!NODES.has(nodeData?.name)) return;
     const created = nodeType.prototype.onNodeCreated;

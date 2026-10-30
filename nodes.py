@@ -46,6 +46,7 @@ from comfy_extras import nodes_minimax_h3 as h3
 from comfy_extras import nodes_audio as comfy_audio_nodes
 from comfy_api.latest import InputImpl
 
+from . import media_options
 from . import refmod_compat
 
 _LOGGER = logging.getLogger("FeiHouEasyH3")
@@ -546,6 +547,16 @@ def _parse_embedded_media_payload(value: Any) -> list[dict[str, str]]:
         if not isinstance(item, Mapping):
             continue
         media_type = str(item.get("media_type") or item.get("type") or "").strip().lower()
+        if item.get("value") is not None and media_type in {"image", "video", "audio"}:
+            # A Media socket's linked tensor (never JSON: it arrives as a list).
+            record = {"filename": "", "media_type": media_type, "value": item["value"], "audio_trim": ""}
+            try:
+                if int(item.get("ordinal") or 0) > 0:
+                    record["ordinal"] = int(item["ordinal"])
+            except (TypeError, ValueError):
+                pass
+            records.append(record)
+            continue
         filename = _embedded_media_path_from_record(item)
         if not filename:
             continue
@@ -553,11 +564,20 @@ def _parse_embedded_media_payload(value: Any) -> list[dict[str, str]]:
             media_type = _media_type_from_name(filename)
         if media_type not in {"image", "video", "audio"}:
             continue
-        records.append({
+        record = {
             "filename": filename,
             "media_type": media_type,
             "audio_trim": str(item.get("audio_trim") or item.get("trim_range") or ""),
-        })
+        }
+        try:
+            ordinal = int(item.get("ordinal") or 0)
+        except (TypeError, ValueError):
+            ordinal = 0
+        if ordinal > 0:
+            record["ordinal"] = ordinal
+        if media_type == "video" and isinstance(item.get("video_opts"), (Mapping, str)) and item.get("video_opts"):
+            record["video_opts"] = item.get("video_opts")
+        records.append(record)
     return records
 
 
@@ -2272,6 +2292,20 @@ def _register_prompt_optimizer_route() -> bool:
     #     except Exception as exc:
     #         return web.json_response({"ok": False, "error": str(exc)}, status=500)
 
+    @routes.get("/feihou_easy_h3_rh/media/probe")
+    async def _probe_media(request):
+        # Read-only facts (frame rate, length, size) of an uploaded input video.
+        try:
+            path = os.path.realpath(_embedded_media_path(request.query.get("file", "")))
+            roots = [os.path.realpath(folder) for folder in (folder_paths.get_input_directory(),
+                     folder_paths.get_output_directory(), folder_paths.get_temp_directory())]
+            if not any(os.path.commonpath([root, path]) == root for root in roots):
+                raise ValueError("只能读取 ComfyUI 输入、输出、临时目录里的视频")
+            info = await asyncio.to_thread(media_options.probe_video, path)
+        except Exception as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+        return web.json_response({"ok": True, **info})
+
     @routes.get("/feihou_easy_h3_rh/refmods")
     async def _refmod_references(request):
         references = await asyncio.to_thread(
@@ -2947,6 +2981,8 @@ class MiniMaxH3Context:
     # Plan handed from Sample Enhancer 1st to Sample Enhancer 2nd.
     dual_plan: Any = None
     reference_map: str = ""
+    # Rebuilds reference conditioning for one time window (motion transfer).
+    segment_builder: Any = None
 
 
 @dataclass(frozen=True)
@@ -2976,6 +3012,9 @@ class _MediaInput:
     value: Any
     filename: str = ""
     audio_trim: str = ""
+    # Fixed card slot of the Media gallery (image card N = slot N, video cards
+    # 10-12, audio cards 13-15); 0 when unknown.  Shot md <Picture N> uses it.
+    slot: int = 0
 
 
 class _AnyType(str):
@@ -3465,6 +3504,8 @@ def _trim_reference_video(value: Any, trim_range: Any) -> Mapping:
 def _reference_video_duration(items: list[_MediaInput], ordinal: int = 1) -> float:
     _, _, item = _alignment_media(items, f"video{ordinal}")
     frames, _, fps = _video_parts(item.value)
+    if _is_windowed(item.value):
+        return int(item.value["total_frames"]) / fps
     return int(frames.shape[0]) / fps
 
 
@@ -3608,6 +3649,322 @@ def _empty_image_conditioning(bundle, prompt, width, height, length, first_frame
     return conditioning, latent
 
 
+@dataclass(frozen=True)
+class H3SegmentBuilder:
+    """Rebuild reference conditioning for one time window of the reference videos.
+
+    ``build(start, count, width, height, trigger_prefix="", video_sizes=None)`` returns
+    ``(conditioning, empty_latent)`` with every reference video (and its
+    soundtrack) cut to output frames [start, start + count) at H3's 24 fps.
+    ``source_frames`` / ``source_audio`` describe reference video 1 in full.
+    """
+
+    build: Any
+    source_frames: int = 0
+    source_audio: Any = None
+    # ``source_window(start, count)`` -> reference video 1 frames (color matching).
+    source_window: Any = None
+    # Prompt + media fingerprint: equal signatures describe the same request.
+    signature: str = ""
+    # @first: IMAGE of the block's first frame, a keyframe at frame 0 when no tail anchors it.
+    first_frame: Any = None
+
+
+def _is_windowed(value: Any) -> bool:
+    """A video decoded for one shot block only (see media_options.load_video_window)."""
+    return isinstance(value, Mapping) and "frame_offset" in value
+
+
+def _frame_offset(value: Any) -> int:
+    return int(value.get("frame_offset") or 0) if _is_windowed(value) else 0
+
+
+def _hold_reference_video(value: Any, hold: int, window: tuple[int, int]) -> dict:
+    """A whole decoded video as the window of a timeline that holds its first frame ``hold`` frames.
+
+    Same result as ``media_options.load_video_window(..., hold=hold)`` for a
+    gallery file: frames [start, start + frames) at H3 fps, the soundtrack
+    with the held part silent, absolute ``frame_offset`` / ``total_frames``.
+    """
+    frames, audio, fps = _video_parts(value)
+    frames = _resample_video_frames(frames, fps)
+    total = int(frames.shape[0])
+    start = max(0, min(int(window[0]), hold + total - 1))
+    count = max(1, min(int(window[1]), hold + total - start))
+    indexes = media_options.hold_indexes(start, count, hold, total)
+    return {"images": frames[indexes.to(frames.device)], "audio": media_options.hold_audio(audio, hold / h3.FPS),
+            "fps": float(h3.FPS), "frame_offset": start, "total_frames": hold + total}
+
+
+def _window_audio(audio: Any, start: int, count: int) -> Any:
+    """Soundtrack of output frames [start, start + count) at H3 fps, zero padded."""
+    if not isinstance(audio, Mapping) or not isinstance(audio.get("waveform"), torch.Tensor):
+        return None
+    rate = _audio_sample_rate(audio)
+    first = round(start / h3.FPS * rate)
+    length = round(count / h3.FPS * rate)
+    waveform = audio["waveform"][..., first:first + length]
+    if waveform.shape[-1] < length:
+        padded = waveform.new_zeros((*waveform.shape[:-1], length))
+        padded[..., :waveform.shape[-1]] = waveform
+        waveform = padded
+    return {"waveform": waveform, "sample_rate": rate}
+
+
+VIDEO_RESIZE_CHUNK = 16
+
+
+def _resize_video_frames(frames: torch.Tensor, width: int, height: int) -> torch.Tensor:
+    """Resize a frame batch for reference encoding.
+
+    On a GPU this is antialiased bicubic in chunks (about ten times faster than
+    the CPU lanczos of ``h3._resize`` for a 1080p window); without one it falls
+    back to that lanczos.
+    """
+    frames = frames[..., :3]
+    if int(frames.shape[2]) == width and int(frames.shape[1]) == height:
+        return frames
+    if not torch.cuda.is_available():
+        return h3._resize(frames, width, height, "disabled")
+    device = comfy.model_management.get_torch_device()
+    output = torch.empty((frames.shape[0], height, width, 3), dtype=torch.float32)
+    for start in range(0, int(frames.shape[0]), VIDEO_RESIZE_CHUNK):
+        chunk = frames[start:start + VIDEO_RESIZE_CHUNK].to(device=device, dtype=torch.float32).movedim(-1, 1)
+        resized = torch.nn.functional.interpolate(chunk, size=(height, width), mode="bicubic", antialias=True)
+        output[start:start + VIDEO_RESIZE_CHUNK] = resized.clamp_(0.0, 1.0).movedim(1, -1).cpu()
+    return output
+
+
+def _fit_area(width: int, height: int, area: float) -> tuple[int, int]:
+    """Largest 32-aligned size with the same aspect ratio and at most ``area`` pixels (never enlarged)."""
+    scale = min(1.0, math.sqrt(max(1.0, area) / max(1, width * height)))
+    step = h3.CANVAS_MULTIPLE
+    return (max(step, int(width * scale) // step * step), max(step, int(height * scale) // step * step))
+
+
+def _fit_short_edge(width: int, height: int, short_edge: int) -> tuple[int, int]:
+    """32-aligned size with the given short edge and the same aspect ratio (never enlarged)."""
+    scale = min(1.0, float(short_edge) / max(1, min(width, height)))
+    step = h3.CANVAS_MULTIPLE
+    return (max(step, round(width * scale / step) * step), max(step, round(height * scale / step) * step))
+
+
+def _reference_image_area(items: list[_MediaInput], ref_image_size: Any, width: int, height: int) -> float | None:
+    """Pixel area of reference image 1 as _reference_conditioning encodes it."""
+    image = next((item.value for item in items if item.media_type == "image"
+                  and isinstance(item.value, torch.Tensor) and item.value.ndim == 4), None)
+    if image is None:
+        return None
+    image_h, image_w = int(image.shape[1]), int(image.shape[2])
+    size_mode = str(ref_image_size or REF_IMAGE_DEFAULT).strip().lower()
+    if size_mode in {"match", "匹配"}:
+        scale = min(1.0, math.sqrt((width * height) / max(1, image_w * image_h)))
+    else:
+        try:
+            short_edge = int(size_mode)
+        except ValueError:
+            short_edge = int(getattr(h3, "REF_IMAGE_SHORT_EDGE", 2048))
+        scale = min(1.0, short_edge / max(1, min(image_w, image_h)))
+    return image_w * image_h * scale * scale
+
+
+def _window_reference_items(items: list[_MediaInput], start: int, count: int,
+                            video_sizes: Mapping[int, Any] | None = None,
+                            width: int = 0, height: int = 0, ref_image_size: Any = None,
+                            end: int | None = None, soundtrack: bool = True) -> list[_MediaInput]:
+    """Cut every reference video to the same output window; past the end, repeat the last frame.
+
+    ``video_sizes`` maps a video ordinal (1, 2, ...) to how that video is
+    downscaled before encoding (fewer reference tokens): a pixel area (float),
+    ``("short_edge", N)``, or ``"reference_image"`` (the area of reference image 1).
+    ``end`` stops the window at a shot boundary: frames at or after it repeat
+    the frame before it instead of showing the next shot.
+    ``soundtrack=False`` drops each video's own soundtrack (motion reference only):
+    the audio cards then start at <Audio 1>.
+    """
+    windowed = []
+    ordinal = 0
+    for item in items:
+        if item.media_type != "video":
+            windowed.append(item)
+            continue
+        ordinal += 1
+        frames, audio, fps = _video_parts(item.value)
+        frames = _resample_video_frames(frames, fps)
+        offset = _frame_offset(item.value)
+        last = offset + frames.shape[0] - 1
+        if end is not None:
+            last = min(last, max(0, int(end) - 1))
+        indexes = (torch.arange(start, start + count).clamp(min=0, max=last) - offset).clamp(min=0, max=frames.shape[0] - 1)
+        frames = frames[indexes]
+        size = (video_sizes or {}).get(ordinal)
+        source_w, source_h = int(frames.shape[2]), int(frames.shape[1])
+        target = None
+        if isinstance(size, tuple) and size[0] == "short_edge":
+            target = _fit_short_edge(source_w, source_h, int(size[1]))
+        elif size == "reference_image":
+            area = _reference_image_area(items, ref_image_size, width, height)
+            target = _fit_area(source_w, source_h, area) if area else None
+        elif isinstance(size, (int, float)) and size > 0:
+            target = _fit_area(source_w, source_h, float(size))
+        if target and target != (source_w, source_h):
+            frames = _resize_video_frames(frames, target[0], target[1])
+        windowed.append(_MediaInput(item.input_index, item.media_type,
+                                    {"images": frames, "audio": _window_audio(audio, start, count) if soundtrack else None,
+                                     "fps": float(h3.FPS)}, ""))
+    return windowed
+
+
+def _segment_source(items: list[_MediaInput]) -> tuple[int, Any]:
+    """Frame count (at H3 fps) and soundtrack of reference video 1."""
+    video = next((item for item in items if item.media_type == "video"), None)
+    if video is None:
+        return 0, None
+    frames, audio, fps = _video_parts(video.value)
+    if _is_windowed(video.value):
+        return int(video.value["total_frames"]), audio
+    return int(_resample_video_frames(frames, fps).shape[0]), audio
+
+
+def _segment_source_window(items: list[_MediaInput]):
+    """``window(start, count)``: frames [start, start + count) of reference video 1 at H3 fps.
+
+    Only the window is indexed, so a long reference video is never copied.
+    """
+    video = next((item for item in items if item.media_type == "video"), None)
+    if video is None:
+        return None
+
+    def window(start: int, count: int) -> torch.Tensor:
+        frames, _audio, fps = _video_parts(video.value)
+        if _is_windowed(video.value):
+            first = max(0, int(start) - _frame_offset(video.value))
+            return frames[first:first + int(count)]
+        total = int(frames.shape[0])
+        if fps and abs(fps - h3.FPS) >= 0.01:
+            length = max(1, round(total * h3.FPS / fps))
+            indexes = torch.linspace(0, total - 1, length).round().long()[int(start):int(start) + int(count)]
+            return frames[indexes.to(frames.device)]
+        return frames[int(start):int(start) + int(count)]
+
+    return window
+
+
+_PICTURE_TAG = re.compile(r"<\s*(?:Picture|Image)\s+(\d+)\s*>", re.IGNORECASE)
+
+
+_PROMPT_REFERENCE_TAG = re.compile(r"<\s*(picture|image|video|audio)\s+(\d+)\s*>", re.IGNORECASE)
+
+
+_REFERENCE_LABELS = {"image": ("Picture", "图片"), "video": ("Video", "视频"), "audio": ("Audio", "音频")}
+
+
+def _reference_image_limit(items, picture_labels, mod_images: int = 0) -> int:
+    """Highest <Picture N> the prompt may use, counting refmod pictures first.
+
+    With ``@pictures`` filtering, only a few pictures survive, so the limit is the
+    highest *label* kept (e.g. 3 for ``@pictures 3``), not how many survived.
+    """
+    if picture_labels is not None:
+        highest = max(picture_labels.values()) if picture_labels else 0
+        return int(mod_images) + int(highest)
+    return int(mod_images) + sum(1 for item in items if item.media_type == "image")
+
+
+def _validate_prompt_reference_tags(prompt, image_count: int, video_count: int, audio_count: int) -> None:
+    """Fail closed when the prompt names a reference slot that is not supplied.
+
+    A motion-transfer shot can carry ``@pictures 1`` while its prompt still says
+    ``<Picture 2>``; the model would then see a dangling tag, so stop instead.
+    """
+    limits = {"image": int(image_count), "video": int(video_count), "audio": int(audio_count)}
+    for match in _PROMPT_REFERENCE_TAG.finditer(str(prompt or "")):
+        kind = "image" if match.group(1).lower() in {"picture", "image"} else match.group(1).lower()
+        ordinal = int(match.group(2))
+        if ordinal > limits[kind]:
+            label, chinese = _REFERENCE_LABELS[kind]
+            raise ValueError(
+                f"Easy H3: 提示词引用了 <{label} {ordinal}>，但当前只有 {limits[kind]} 个{chinese}参考。"
+                f"请检查分镜的 @pictures 与本镜接线，或改正提示词里的编号。")
+
+
+def _rh_media_signature(items: list[_MediaInput]) -> list:
+    """What the segment cache must match: files, trims, windows and kept slots."""
+    signature = []
+    for item in items:
+        value = item.value
+        if isinstance(value, Mapping) and isinstance(value.get("images"), torch.Tensor):
+            frames = value["images"]
+            shape = [list(frames.shape), _frame_offset(value), float(frames[::max(1, frames.shape[0] // 8)].float().mean())]
+        elif isinstance(value, torch.Tensor):
+            shape = [list(value.shape), float(value[..., :1].float().mean())]
+        else:
+            shape = []
+        signature.append([item.input_index, item.slot, item.media_type, item.filename, item.audio_trim, shape])
+    return signature
+
+
+def _pick_shot_pictures(items: list[_MediaInput], wanted_pictures, *, slot_numbers: bool):
+    """Pictures a shot keeps, and how its <Picture N> numbers map to send order.
+
+    With ``slot_numbers`` (Media cards / Media Bridge, fixed slots) picture N is
+    image card / image_N even when an earlier card is empty; otherwise it is
+    the N-th loaded picture.  ``wanted_pictures`` empty keeps them all.
+    """
+    wanted = {int(number) for number in wanted_pictures} if wanted_pictures else None
+    kept, labels, ordinal = [], {}, 0
+    for item in items:
+        if item.media_type == "image":
+            ordinal += 1
+            number = item.slot if slot_numbers and 0 < item.slot <= MAX_IMAGES else ordinal
+            if wanted is not None and number not in wanted:
+                continue
+            labels[item.input_index] = number
+        kept.append(item)
+    missing = sorted((wanted or set()) - set(labels.values()))
+    if missing:
+        loaded = [item.slot if slot_numbers and item.slot else position
+                  for position, item in enumerate((i for i in items if i.media_type == "image"), 1)]
+        raise ValueError(f"Easy H3: 分镜要求 Picture {missing}，但这些卡位没有图"
+                         f"（已载入的参考图：{loaded or '无'}）。")
+    if not any(item.media_type in {"image", "video"} for item in kept):
+        raise ValueError("Easy H3: 分镜挑图后没有任何图片或视频参考，请检查 @pictures 与接线。")
+    # H3 numbers the pictures it receives 1..N, so <Picture 3> alone becomes <Picture 1>.
+    renumber = {labels[item.input_index]: position for position, item in enumerate(
+        (item for item in kept if item.media_type == "image"), 1)}
+    return kept, renumber
+
+
+def _shot_picture(items: list[_MediaInput], number: int, *, slot_numbers: bool):
+    """Picture ``number`` (same numbering as ``_pick_shot_pictures``) as IMAGE, for @first."""
+    ordinal = 0
+    for item in items:
+        if item.media_type != "image":
+            continue
+        ordinal += 1
+        if (item.slot if slot_numbers and 0 < item.slot <= MAX_IMAGES else ordinal) == int(number):
+            return item.value[:1]
+    raise ValueError(f"Easy H3 RH: 分镜写了 @first {number}，但图卡 {number} 没有图。")
+
+
+def _renumber_picture_tags(prompt: str, renumber: Mapping[int, int]) -> str:
+    """Rewrite <Picture N> to the order the kept pictures are presented in.
+
+    The H3 tokenizer labels the reference pictures it receives <Picture 1>,
+    <Picture 2>, ... in presentation order, so a shot that keeps only picture 3
+    must call it <Picture 1>.  A tag of a picture that was not kept would bind
+    to the wrong image after renumbering, so it is refused instead.
+    """
+    dropped = sorted({int(match.group(1)) for match in _PICTURE_TAG.finditer(str(prompt or ""))} - set(renumber))
+    if dropped:
+        kept = ", ".join(str(number) for number in sorted(renumber)) or "无"
+        raise ValueError(
+            f"Easy H3: 提示词引用了 {', '.join(f'<Picture {number}>' for number in dropped)}，"
+            f"但本分镜送进去的参考图只有 {kept}（@pictures 选的，或没写 @pictures 时卡位上已载入的图）。"
+            f"请在对应卡位载入图片、把它加进 @pictures，或改正提示词里的编号。")
+    return _PICTURE_TAG.sub(lambda match: f"<Picture {renumber[int(match.group(1))]}>", str(prompt or ""))
+
+
 def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None, refmod_data=None):
     latent, frame_count = h3._empty_av_latent(width, height, length)
     ref_items = list(refmod_data[0]) if refmod_data else []
@@ -3662,7 +4019,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         if video_w * video_h < canvas_w * canvas_h:
             canvas_w = max(h3.CANVAS_MULTIPLE, round(video_w / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
             canvas_h = max(h3.CANVAS_MULTIPLE, round(video_h / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
-        frames = h3._resize(frames, canvas_w, canvas_h, "disabled")
+        frames = _resize_video_frames(frames, canvas_w, canvas_h)
         if frames.shape[0] > frame_count:
             frames = frames[:frame_count]
         count = frames.shape[0]
@@ -3864,30 +4221,85 @@ class FeiHouEasyH3:
         return True
 
     @staticmethod
-    def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None) -> list[_MediaInput]:
+    def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None, window=None, hold=0) -> list[_MediaInput]:
+        """``window`` = (start_frame, frames) of a motion shot block: gallery videos
+        then decode only that part of the file.  ``hold`` = frames of held first
+        frame in front of the timeline (shot md @hold)."""
         shot = kwargs.get("production_shot")
-        if shot is not None:
+        if shot is not None and not shot.get("keep_media"):
             return [_MediaInput(index, item["media_type"],
                                 _load_embedded_media(f"{item['subfolder']}/{item['filename']}", item["media_type"]),
                                 f"{item['subfolder']}/{item['filename']}", item.get("audio_trim", ""))
                     for index, item in enumerate(shot["media"], 1)]
         items = []
+        image_area = None
+        slot_offsets = {"image": 0, "video": MAX_IMAGES, "audio": MAX_IMAGES + MAX_VIDEOS}
         for index, record in enumerate(_media_records_from_inputs(kwargs, extra_pnginfo, unique_id), start=1):
             value = record.get("value")
             media_type = str(record.get("media_type") or "")
+            trim = str(record.get("audio_trim") or "")
+            filename = str(record.get("filename") or "").strip()
+            options = media_options.parse_video_options(record.get("video_opts")) if media_type == "video" else None
             if value is None:
-                filename = str(record.get("filename") or "").strip()
                 if not filename:
                     continue
-                value = _load_embedded_media(filename, media_type)
-            items.append(_MediaInput(
-                index,
-                media_type,
-                value,
-                str(record.get("filename") or ""),
-                str(record.get("audio_trim") or ""),
-            ))
+                if media_type == "video" and window is not None:
+                    value = media_options.load_video_window(
+                        _embedded_media_path(filename), options, _audio_trim_range(trim) if trim.strip() else None,
+                        window[0], window[1], image_area, float(h3.FPS), hold)
+                    trim = ""
+                elif media_type == "video" and options is not None:
+                    # 媒体设置: frame rate, size and frame window applied while decoding.
+                    value = media_options.load_video(_embedded_media_path(filename), options, image_area)
+                    trim = ""
+                else:
+                    value = _load_embedded_media(filename, media_type)
+            if media_type == "image" and image_area is None and isinstance(value, torch.Tensor) and value.ndim == 4:
+                image_area = float(value.shape[1] * value.shape[2])
+            ordinal = int(record.get("ordinal") or 0)
+            slot = slot_offsets.get(media_type, 0) + ordinal if ordinal > 0 else 0
+            items.append(_MediaInput(index, media_type, value, str(record.get("filename") or ""), trim, slot))
         return items
+
+    @staticmethod
+    @staticmethod
+    def _passthrough_context(h3_bundle, items, width, height, fps, streamed_attention):
+        """「原片直出」shot block: no prompt or reference encoding at all.
+
+        Motion Segment hands the sampler no steps (ComfyUI returns the latent
+        without loading the model) and Motion Collect outputs the source frames,
+        so this context only needs the canvas size and the source accessors.
+        """
+        if not any(item.media_type == "video" for item in items):
+            raise ValueError("Easy H3: 这个分镜写了 @passthrough（原片直出），但没有接参考视频 1。")
+        latent, _frame_count = h3._empty_av_latent(width, height, 5)
+        source_frames, source_audio = _segment_source(items)
+        builder = H3SegmentBuilder(
+            build=None,
+            source_frames=source_frames,
+            source_audio=source_audio,
+            source_window=_segment_source_window(items),
+            signature="passthrough",
+        )
+        model = _clone_h3_model_with_memory_features(
+            h3_bundle.model_for("ref2va"),
+            force_offload=h3_bundle.force_offload_enabled,
+            streamed_attention=streamed_attention,
+        )
+        _LOGGER.info("Easy H3: 原片直出分镜，跳过提示词和参考素材编码（画布 %dx%d）", width, height)
+        context = MiniMaxH3Context(
+            conditioning=[],
+            latent=latent,
+            clip=h3_bundle.clip,
+            video_vae=h3_bundle.video_vae,
+            audio_vae=h3_bundle.audio_vae,
+            fps=float(fps),
+            prompt_preview="（原片直出，不采样）",
+            audio_1=_first_reference_audio(items),
+            duration_control=H3DurationControl(),
+            segment_builder=builder,
+        )
+        return model, None, context
 
     @staticmethod
     def _keyframes(items, role):
@@ -3938,11 +4350,62 @@ class FeiHouEasyH3:
             raise ValueError("RefMods require reference mode / MOD 请使用参考生视频模式。")
         keyframe_role = _canonical_keyframe_role(keyframe_role)
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
-        items = _rh_timed_call("media load", cls._collect_media, kwargs, extra_pnginfo, unique_id)
+        # Motion-transfer shot (分镜提示词 · RH): media come from Media · RH and
+        # each gallery video is decoded only for this block.
+        motion_shot = (isinstance(production_shot, dict) and bool(production_shot.get("keep_media"))
+                       and isinstance(production_shot.get("motion"), dict))
+        window = None
+        hold = int(production_shot["motion"].get("hold_frames") or 0) if motion_shot else 0
+        if motion_shot and int(production_shot["motion"].get("frames") or 0) > 0:
+            window = (int(production_shot["motion"].get("start_frame") or 0), int(production_shot["motion"]["frames"]))
+        items = _rh_timed_call("media load", cls._collect_media, kwargs, extra_pnginfo, unique_id, window, hold)
         # Decode/crop each video once; duration and conditioning share these frames.
         items = [_MediaInput(item.input_index, item.media_type,
-                             _trim_reference_video(item.value, item.audio_trim), item.filename, "")
-                 if item.media_type == "video" else item for item in items]
+                             _trim_reference_video(item.value, item.audio_trim), item.filename, "", item.slot)
+                 if item.media_type == "video" and not _is_windowed(item.value) else item for item in items]
+        if hold and window is not None:
+            # A connected (not gallery) video was decoded whole; hold its first frame the same way.
+            items = [_MediaInput(item.input_index, item.media_type, _hold_reference_video(item.value, hold, window),
+                                 item.filename, "", item.slot)
+                     if item.media_type == "video" and not _is_windowed(item.value) else item for item in items]
+        if motion_shot and production_shot.get("passthrough"):
+            return cls._passthrough_context(h3_bundle, items, width, height, fps,
+                                            _as_bool(advanced) and _as_bool(low_vram_streamed_attention))
+        source_items = items
+        if motion_shot and production_shot["motion"].get("video") is False:
+            # @video none (e.g. a talk block): encode only pictures and audio; the
+            # reference video still gives Motion Collect the timeline and source audio.
+            items = [item for item in items if item.media_type != "video"]
+            _LOGGER.info("Easy H3 RH: 分镜写了 @video none，本块不送参考视频（只编码图片和音频）")
+        # @first: the first-frame picture is taken before @pictures drops cards; it
+        # is a keyframe, not a reference card, so it need not be in @pictures.
+        shot_first_frame = None
+        first_picture = int(production_shot["motion"].get("first_picture") or 0) if motion_shot else 0
+        if first_picture:
+            shot_first_frame = _shot_picture(items, first_picture, slot_numbers=True)
+            _LOGGER.info("Easy H3 RH: 分镜写了 @first %d，图卡 %d 作为本块首帧", first_picture, first_picture)
+        if motion_shot:
+            wanted_pictures = production_shot.get("pictures") or ()
+            if production_shot.get("pictures_explicit") and not wanted_pictures:
+                # `@pictures none`: only the video references are encoded.
+                items = [item for item in items if item.media_type != "image"]
+                if not any(item.media_type == "video" for item in items):
+                    raise ValueError("Easy H3 RH: 这个分镜写了 @pictures none，但没有任何视频参考可跟随。")
+            elif not refmods:
+                items, renumber = _pick_shot_pictures(items, wanted_pictures, slot_numbers=True)
+                prompt = _renumber_picture_tags(prompt, renumber)
+                if any(old != new for old, new in renumber.items()):
+                    _LOGGER.info("Easy H3 RH: 分镜参考图编号改写为送入顺序 %s",
+                                 ", ".join(f"<Picture {old}>→<Picture {new}>" for old, new in renumber.items()))
+            if not refmods:
+                # A shot md names its slots: refuse a tag whose media was not
+                # supplied.  A video's soundtrack also becomes an <Audio N>.
+                video_audio = sum(1 for item in items if item.media_type == "video"
+                                  and _video_parts(item.value)[1] is not None)
+                _validate_prompt_reference_tags(
+                    prompt, sum(1 for item in items if item.media_type == "image"),
+                    sum(1 for item in items if item.media_type == "video"),
+                    video_audio + sum(1 for item in items if item.media_type == "audio"))
         keyframe_images = None
         highres_rebuilder = None
         ref_size_is_match = str(ref_image_size or "").strip().lower() in {"match", "匹配"}
@@ -4009,6 +4472,7 @@ class FeiHouEasyH3:
             second_sampling_active = True
 
         reference_cache = {}
+        segment_builder = None
         if mode == MODE_REFERENCE:
             if not items and not refmods:
                 raise ValueError(
@@ -4027,11 +4491,32 @@ class FeiHouEasyH3:
             if counts["image"] == 0 and counts["video"] == 0 and not any(mod.kind in {"image", "video"} for mod, _ in refmods):
                 raise ValueError("Reference mode needs an image or video in addition to audio")
             model = h3_bundle.model_for("ref2va")
-            conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only, reference_cache=reference_cache, refmod_data=refmod_data)
+            if motion_shot:
+                # Motion Segment · RH encodes each window through the segment
+                # builder; encoding the whole reference video here would only be
+                # thrown away.  It reads the canvas size from this latent.
+                conditioning, (latent, _frames), prompt_preview = [], h3._empty_av_latent(width, height, 5), str(prompt or "")
+                _LOGGER.info("Easy H3 RH: 动作迁移分镜，整段参考视频不在 Setup 编码，交给动作迁移分段按窗口编码")
+            else:
+                conditioning, latent, prompt_preview = _reference_conditioning(h3_bundle, prompt, width, height, length, ref_image_size, items, text_only=reference_text_only, reference_cache=reference_cache, refmod_data=refmod_data)
             highres_rebuilder = H3HighresRebuilder(
                 build=lambda w, h, trigger_prefix="", _p=prompt, _l=length, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
                     _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, _l, _r, list(_i), text_only=_t, reference_cache=reference_cache, refmod_data=_m)[:2],
                 canvas_dependent=ref_size_is_match,
+            )
+            source_frames, source_audio = _segment_source(source_items)
+            segment_builder = H3SegmentBuilder(
+                build=lambda start, count, w, h, trigger_prefix="", video_sizes=None, end=None, soundtrack=True, _p=prompt, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
+                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, count, _r,
+                                            _window_reference_items(list(_i), start, count, video_sizes, w, h, _r, end, soundtrack),
+                                            text_only=_t, reference_cache=reference_cache, refmod_data=_m)[:2],
+                source_frames=source_frames,
+                source_audio=source_audio,
+                source_window=_segment_source_window(source_items),
+                signature=hashlib.sha256(json.dumps(
+                    [str(prompt or ""), str(ref_image_size), bool(reference_text_only), _rh_media_signature(items),
+                     reference_map, hold], ensure_ascii=False).encode("utf-8")).hexdigest(),
+                first_frame=shot_first_frame,
             )
         else:
             image_items = [item for item in items if item.media_type == "image"]
@@ -4104,6 +4589,7 @@ class FeiHouEasyH3:
             keyframe_images=keyframe_images,
             highres_rebuilder=highres_rebuilder,
             reference_map=reference_map,
+            segment_builder=segment_builder,
         )
         if h3_bundle.force_offload_enabled:
             _release_auxiliary_models_for_sampling(h3_bundle, phase="first-pass sampling")

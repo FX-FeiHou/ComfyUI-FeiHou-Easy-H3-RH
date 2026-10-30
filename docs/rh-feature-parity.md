@@ -41,3 +41,16 @@ The clean second-pass model record is captured before applying second-pass LoRAs
 Standard-only local API-provider settings are intentionally not copied over RH's platform API settings. This avoids replacing RunningHub authentication, billing or resource discovery.
 
 CPU/mock and frontend checks do not constitute a live RunningHub integration test.
+
+## Motion transfer, shot md and Media card settings (2026-10-26)
+
+New RH nodes (distinct class IDs, declared in the frontend `rh.nodes` metadata):
+
+- `FeiHouEasyH3RHShotPrompts` (分镜提示词 · RH): parses the shot md (`===== FEIHOU_SHOT nn =====`, `@range`, `@pictures`, `@continue`, `@passthrough`) and outputs the RH production-shot type for Setup and Motion Segment. Run state and block tails live under `output/feihou_h3_rh_motion`.
+- `FeiHouEasyH3RHMotionSegment` / `FeiHouEasyH3RHMotionCollect`: segment-by-segment motion transfer, original-footage blocks (`@passthrough`), per-shot background colour matching, encoded-window cache for re-runs with another seed. Collect's `series_latent` feeds FeiHou Toolbox Video Combine V2 when it is installed.
+
+Setup · RH for motion shots: media stay those of Media · RH; each gallery video decodes only the current block (frame window at 24 fps); the whole reference video is not encoded in Setup; `<Picture N>` / `@pictures N` mean image card N; tags without supplied media are refused.
+
+Media · RH video cards: 「媒体设置」 (frame rate, short edge, frame load cap, skip frames, duration — linked), autoplaying muted preview with sound on hover, preview follows the last run block, card heights up to 2:3 (images/videos) and 4:3 (audio). The settings travel inside the existing record JSON (`video_opts` next to `audio_trim`), so API-triggered runs read them from `embedded_media_json` / node properties without the browser hook.
+
+RunningHub constraints kept: no server-side file dialog and no local md paths (the md text in the node is what runs; the browser remembers the file handle only for 「刷新提示词」); one read-only route `/feihou_easy_h3_rh/media/probe` for the popup's source facts — if the gateway blocks it the popup still works and counts frame rate 0 at 24 fps; UI message keys `feihou_rh_shot` / `feihou_rh_motion` and frontend globals are RH-specific. Not ported: the standard Media Bridge node. CPU/mock and local frontend checks do not constitute a live RunningHub test.

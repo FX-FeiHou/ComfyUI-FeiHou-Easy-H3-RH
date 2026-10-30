@@ -247,6 +247,12 @@ function hideInternal(w) {
 
 app.registerExtension({
     name: "FeiHou.EasyH3RH.ProductionPack",
+    // RH change --start--
+    rh: {
+        type: "nodes",
+        nodes: ["FeiHouEasyH3RHProductionPackLoader", "FeiHouEasyH3RH", "FeiHouEasyH3RHSetup"],
+    },
+    // RH change --end--
     beforeRegisterNodeDef(nodeType, nodeData) {
         if (nodeData.name !== CLASS) return;
         const created = nodeType.prototype.onNodeCreated;

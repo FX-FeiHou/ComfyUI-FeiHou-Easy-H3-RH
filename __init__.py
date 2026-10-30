@@ -18,6 +18,8 @@ from .dual_sample import (
 )
 from .split_nodes import FeiHouEasyH3RHContinuousOutput, FeiHouEasyH3RHMedia, FeiHouEasyH3RHSetup
 from .production_continuation import FeiHouEasyH3ContinueOut
+from .shot_prompts import FeiHouEasyH3ShotPrompts
+from .motion_transfer import FeiHouEasyH3MotionCollect, FeiHouEasyH3MotionSegment
 
 NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHFaceRefine": FeiHouEasyH3FaceRefine,
@@ -38,6 +40,9 @@ NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHSetup": FeiHouEasyH3RHSetup,
     "FeiHouEasyH3RHContinuousOutput": FeiHouEasyH3RHContinuousOutput,
     "FeiHouEasyH3RHContinueOut": FeiHouEasyH3ContinueOut,
+    "FeiHouEasyH3RHShotPrompts": FeiHouEasyH3ShotPrompts,
+    "FeiHouEasyH3RHMotionSegment": FeiHouEasyH3MotionSegment,
+    "FeiHouEasyH3RHMotionCollect": FeiHouEasyH3MotionCollect,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -58,6 +63,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FeiHouEasyH3RHSetup": "FeiHou Easy H3 Setup · RH",
     "FeiHouEasyH3RHContinuousOutput": "FeiHou Easy H3 Continuous 输出 · RH",
     "FeiHouEasyH3RHContinueOut": "FeiHou Easy H3 接续合并 · RH",
+    "FeiHouEasyH3RHShotPrompts": "FeiHou Easy H3 分镜提示词 · RH",
+    "FeiHouEasyH3RHMotionSegment": "FeiHou Easy H3 Motion Segment（动作迁移分段）· RH",
+    "FeiHouEasyH3RHMotionCollect": "FeiHou Easy H3 Motion Collect（动作迁移收束）· RH",
 }
 
 WEB_DIRECTORY = "./web"
