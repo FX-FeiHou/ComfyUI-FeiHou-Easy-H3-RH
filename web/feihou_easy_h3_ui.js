@@ -7238,11 +7238,11 @@ function installNode(nodeType, nodeData) {
         }
         if (info && this.properties?.[PROMPT_DOC_PROP]) {
             info.properties ||= {};
-            info.properties[PROMPT_DOC_PROP] = this.properties[PROMPT_DOC_PROP];
+            info.properties[PROMPT_DOC_PROP] = plainCopy(this.properties[PROMPT_DOC_PROP]);
         }
         if (info && this.properties?.[PROMPT_VIEW_PROP]) {
             info.properties ||= {};
-            info.properties[PROMPT_VIEW_PROP] = this.properties[PROMPT_VIEW_PROP];
+            info.properties[PROMPT_VIEW_PROP] = plainCopy(this.properties[PROMPT_VIEW_PROP]);
         }
         if (info) {
             info.properties ||= {};
