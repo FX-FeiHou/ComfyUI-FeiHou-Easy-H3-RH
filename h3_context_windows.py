@@ -110,6 +110,103 @@ def plan_windows(total_frames: int, window_frames: int, overlap_frames: int) -> 
     return windows
 
 
+# Lips move a little before and after the sound of a line.
+SPEECH_PAD_FRAMES = 4
+# A window of a talk block is at least this many 17-frame groups (124 frames ≈ 5 s).
+SPEECH_MIN_WINDOW_GROUPS = 7
+
+
+def _window(frame_start: int, frames: int, total_frames: int) -> Window:
+    full_audio, length_a = audio_tokens(total_frames), audio_tokens(frames)
+    audio_start = min(round(frame_start * AUDIO_PER_FRAME), full_audio - length_a)
+    return Window(frame_start, frames, GROUP_TOKENS * (frame_start // GROUP_FRAMES), video_tokens(frames),
+                  audio_start, length_a)
+
+
+def plan_speech_windows(total_frames: int, window_frames: int, overlap_frames: int,
+                        speech: list[tuple[int, int]]) -> tuple[list[Window], int]:
+    """Group-aligned windows whose overlaps fall in the pauses between spoken lines.
+
+    ``speech`` = (start, end) frames of every dialogue line, relative to the
+    clip.  In an overlap two windows are blended, so a sentence there would be
+    spoken by both: the windows are chosen so that as few speech frames as
+    possible lie in an overlap.  A window may be shorter than
+    ``window_frames`` (down to about 5 s) so that its end can reach a pause;
+    the first starts at frame 0, the last ends at the clip's end and every
+    overlap is at least ``overlap_frames``.  Ties go to fewer windows, then to
+    longer ones, then to the even plan of ``plan_windows``.  Returns the
+    windows and the speech frames left inside overlaps (0 = every line lies
+    inside one window).
+    """
+    plain = plan_windows(total_frames, window_frames, overlap_frames)
+    if len(plain) < 2 or not speech:
+        return plain, 0
+    total = int(total_frames)
+    total_groups = groups_of(total)
+    longest = groups_of(plain[0].frames)
+    overlap_groups = max(1, int(overlap_frames) // GROUP_FRAMES)
+    shortest = min(longest, max(SPEECH_MIN_WINDOW_GROUPS, overlap_groups + 1))
+    talking = torch.zeros(total, dtype=torch.bool)
+    for start, end in speech:
+        start, end = max(0, int(start) - SPEECH_PAD_FRAMES), min(total, int(end) + SPEECH_PAD_FRAMES)
+        if end > start:
+            talking[start:end] = True
+    talking = talking.tolist()
+    costs: dict[tuple[int, int], tuple[float, int]] = {}
+
+    def cost(end_group: int, next_start: int) -> tuple[float, int]:
+        """(weighted, plain) speech frames in the overlap of a window ending on group
+        ``end_group`` (frame 17e + 5) and the next starting on ``next_start``.  Speech in
+        the middle of an overlap, where both windows weigh about the same, counts most."""
+        key = (end_group, next_start)
+        if key not in costs:
+            a, b = GROUP_FRAMES * next_start, min(total, GROUP_FRAMES * end_group + 5)
+            length, weighted, plain_frames = b - a, 0.0, 0
+            for index in range(max(0, length)):
+                if talking[a + index]:
+                    share = (index + 1) / (length + 1)
+                    weighted += 2.0 * min(share, 1.0 - share)
+                    plain_frames += 1
+            costs[key] = (weighted, plain_frames)
+        return costs[key]
+
+    # A window is (start group, end group); best[(s, e)] = (weighted cost, windows, -covered groups,
+    # speech frames in overlaps, path).  Every transition moves to a later start, so states are
+    # final once their start is reached.
+    best = {(0, e): (0.0, 1, -e, 0, [(0, e)]) for e in range(shortest, min(longest, total_groups) + 1)}
+    for s in range(total_groups):
+        for e in range(s + shortest, min(s + longest, total_groups - 1) + 1):
+            here = best.get((s, e))
+            if here is None:
+                continue
+            for r in range(s + 1, e - overlap_groups + 1):
+                weighted, frames_crossed = cost(e, r)
+                for e2 in range(max(e + 1, r + shortest), min(r + longest, total_groups) + 1):
+                    option = (round(here[0] + weighted, 6), here[1] + 1, here[2] - (e2 - r),
+                              here[3] + frames_crossed, here[4] + [(r, e2)])
+                    if (r, e2) not in best or option[:3] < best[(r, e2)][:3]:
+                        best[(r, e2)] = option
+    finals = [value for (s, e), value in best.items() if e == total_groups]
+    weighted, count, _covered, crossed, path = min(finals, key=lambda item: item[:3])
+    even = [(w.frame_start // GROUP_FRAMES, groups_of(w.frames) + w.frame_start // GROUP_FRAMES) for w in plain]
+    even_costs = [cost(left[1], right[0]) for left, right in zip(even, even[1:])]
+    if round(sum(c[0] for c in even_costs), 6) <= weighted and len(even) <= count:
+        chosen = plain  # the even plan is just as good
+    else:
+        chosen = [_window(GROUP_FRAMES * s, frames_of(e - s), total) for s, e in path]
+    return chosen, speech_in_overlaps(chosen, speech)
+
+
+def speech_in_overlaps(windows: list[Window], speech: list[tuple[int, int]]) -> int:
+    """Frames of the spoken lines themselves (no lip padding) that lie where windows overlap."""
+    frames = set()
+    for before, after in zip(windows, windows[1:]):
+        start, end = after.frame_start, before.frame_start + before.frames
+        for a, b in speech:
+            frames.update(range(max(start, int(a)), min(end, int(b))))
+    return len(frames)
+
+
 def _ramp(length: int, overlap: int, rising: bool) -> torch.Tensor:
     """Weights over ``length`` with a linear ramp across the first/last ``overlap`` entries.
 
@@ -253,7 +350,7 @@ def make_guider(model, conditioning, cfg: float = 1.0, negative=None, canvas_key
             self.set_cfg(float(cfg) if use_negative else 1.0)
             # The outer conds (model loading, hooks) are the first window's.
             self.inner_set_conds(self.window_raw[0])
-            ratio = window_set.windows[0].video_len / float(window_set.video_total)
+            ratio = max(window.video_len for window in window_set.windows) / float(window_set.video_total)
 
             def window_memory(executor, model, noise_shape, conds, *args, **kwargs):
                 # Memory is estimated for one window (the video dominates), not the whole clip.

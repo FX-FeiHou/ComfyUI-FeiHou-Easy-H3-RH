@@ -18,6 +18,8 @@ import logging
 import uuid
 import hashlib
 import base64
+import contextlib
+import contextvars
 import asyncio
 import gc
 import inspect
@@ -28,6 +30,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
@@ -48,6 +51,8 @@ from comfy_api.latest import InputImpl
 
 from . import media_options
 from . import refmod_compat
+from . import remake as remake_mode
+from . import timed_prompt
 
 _LOGGER = logging.getLogger("FeiHouEasyH3")
 
@@ -2983,6 +2988,11 @@ class MiniMaxH3Context:
     reference_map: str = ""
     # Rebuilds reference conditioning for one time window (motion transfer).
     segment_builder: Any = None
+    # Setup fed by 分镜提示词: conditioning and latent are placeholders that only
+    # 动作迁移分段 replaces with each segment's window.
+    motion_placeholder: bool = False
+    # H3 动作迁移预处理 (dict or None): remake, face_blur (None / 1-5 / "auto"), face_detector.
+    motion_preprocess: Any = None
 
 
 @dataclass(frozen=True)
@@ -3625,6 +3635,7 @@ def _frame_length(seconds: float, fps: float, round_up: bool = False) -> int:
 
 
 def _empty_image_conditioning(bundle, prompt, width, height, length, first_frame=None, last_frame=None):
+    prompt = timed_prompt.strip_time_tags(prompt)
     latent, frame_count = h3._empty_av_latent(width, height, length)
     images = []
     keyframes = []
@@ -3721,7 +3732,7 @@ def _resize_video_frames(frames: torch.Tensor, width: int, height: int) -> torch
     the CPU lanczos of ``h3._resize`` for a 1080p window); without one it falls
     back to that lanczos.
     """
-    frames = frames[..., :3]
+    frames = media_options.as_float_frames(frames[..., :3])
     if int(frames.shape[2]) == width and int(frames.shape[1]) == height:
         return frames
     if not torch.cuda.is_available():
@@ -3796,7 +3807,7 @@ def _window_reference_items(items: list[_MediaInput], start: int, count: int,
         if end is not None:
             last = min(last, max(0, int(end) - 1))
         indexes = (torch.arange(start, start + count).clamp(min=0, max=last) - offset).clamp(min=0, max=frames.shape[0] - 1)
-        frames = frames[indexes]
+        frames = media_options.as_float_frames(frames[indexes])
         size = (video_sizes or {}).get(ordinal)
         source_w, source_h = int(frames.shape[2]), int(frames.shape[1])
         target = None
@@ -3839,13 +3850,13 @@ def _segment_source_window(items: list[_MediaInput]):
         frames, _audio, fps = _video_parts(video.value)
         if _is_windowed(video.value):
             first = max(0, int(start) - _frame_offset(video.value))
-            return frames[first:first + int(count)]
+            return media_options.as_float_frames(frames[first:first + int(count)])
         total = int(frames.shape[0])
         if fps and abs(fps - h3.FPS) >= 0.01:
             length = max(1, round(total * h3.FPS / fps))
             indexes = torch.linspace(0, total - 1, length).round().long()[int(start):int(start) + int(count)]
-            return frames[indexes.to(frames.device)]
-        return frames[int(start):int(start) + int(count)]
+            return media_options.as_float_frames(frames[indexes.to(frames.device)])
+        return media_options.as_float_frames(frames[int(start):int(start) + int(count)])
 
     return window
 
@@ -3965,7 +3976,186 @@ def _renumber_picture_tags(prompt: str, renumber: Mapping[int, int]) -> str:
     return _PICTURE_TAG.sub(lambda match: f"<Picture {renumber[int(match.group(1))]}>", str(prompt or ""))
 
 
-def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None, refmod_data=None):
+# Context windows: encode every window's reference media first (VAE stays
+# loaded), then every window's prompt (the text encoder stays loaded), instead
+# of swapping the VAE and the 32B text encoder in and out once per window.
+_TEXT_BATCH = contextvars.ContextVar("feihou_h3_text_batch", default=None)
+_PENDING_TEXT = "feihou_h3_pending_text"
+# Encoded prompts by content (prompt + every picture / video frame the text
+# encoder sees): a rerun or another pass over the same window skips the encode.
+_TEXT_CACHE: "OrderedDict[str, Any]" = OrderedDict()
+TEXT_CACHE_SIZE = 48
+
+
+class _TextBatch:
+    def __init__(self):
+        self.jobs = []
+        self.image_latents = {}
+
+
+@contextlib.contextmanager
+def deferred_text_encoding():
+    """Inside, reference conditioning leaves the prompt encode for ``resolve_text_batch``."""
+    batch = _TextBatch()
+    token = _TEXT_BATCH.set(batch)
+    try:
+        yield batch
+    finally:
+        _TEXT_BATCH.reset(token)
+
+
+def has_pending_text(conditioning) -> bool:
+    return any(isinstance(entry, (list, tuple)) and len(entry) > 1 and isinstance(entry[1], dict)
+               and _PENDING_TEXT in entry[1] for entry in conditioning or ())
+
+
+def _text_key(clip, prompt, ref_items) -> str:
+    digest = hashlib.blake2b(digest_size=20)
+    digest.update(str(id(getattr(clip, "cond_stage_model", clip))).encode())
+    digest.update(str(prompt).encode("utf-8"))
+    for item in ref_items:
+        digest.update(str(item.get("type")).encode())
+        digest.update(json.dumps(item.get("timestamps") or []).encode())
+        data = item.get("data")
+        if isinstance(data, torch.Tensor):
+            digest.update(str(tuple(data.shape)).encode())
+            digest.update(data.detach().to("cpu", torch.float16).contiguous().numpy().tobytes())
+    return digest.hexdigest()
+
+
+def _encode_text(clip, prompt, ref_items):
+    key = _text_key(clip, prompt, ref_items)
+    cached = _TEXT_CACHE.get(key)
+    if cached is not None:
+        _TEXT_CACHE.move_to_end(key)
+        return [[tensor, dict(extra)] for tensor, extra in cached], True
+    if isinstance(prompt, tuple):
+        # Remake 替换: text-only labels, each segment tokenized on its own.
+        tokens = remake_mode.tokenize(clip, prompt)
+    else:
+        tokens = clip.tokenize(prompt, minimax_ref_items=ref_items)
+    conditioning = clip.encode_from_tokens_scheduled(tokens)
+    _TEXT_CACHE[key] = [[tensor.detach().cpu() if isinstance(tensor, torch.Tensor) else tensor,
+                         {name: value.detach().cpu() if isinstance(value, torch.Tensor) else value
+                          for name, value in extra.items()}] for tensor, extra in conditioning]
+    while len(_TEXT_CACHE) > TEXT_CACHE_SIZE:
+        _TEXT_CACHE.popitem(last=False)
+    return conditioning, False
+
+
+def resolve_text_batch(batch, conditionings):
+    """Encode the batch's prompts in one go and fill them into ``conditionings`` (same order)."""
+    encoded, reused = {}, 0
+    for index, (clip, prompt, ref_items) in enumerate(batch.jobs):
+        encoded[index], hit = _encode_text(clip, prompt, ref_items)
+        reused += int(hit)
+    if batch.jobs:
+        _LOGGER.info("Easy H3 上下文窗口：%d 个窗口的提示词集中编码（%d 个与之前相同，直接复用）",
+                     len(batch.jobs), reused)
+
+    def fill(conditioning):
+        out = []
+        for tensor, extra in conditioning:
+            if _PENDING_TEXT not in extra:
+                out.append([tensor, extra])
+                continue
+            extra = dict(extra)
+            job = extra.pop(_PENDING_TEXT)
+            out.extend([text, {**text_extra, **extra}] for text, text_extra in encoded[job])
+        return out
+
+    return [fill(conditioning) for conditioning in conditionings]
+
+
+def _window_text(prompt, start, count):
+    """The prompt for output frames [start, start + count): time-tagged lines of other times are left out."""
+    if not timed_prompt.has_time_tags(prompt):
+        return prompt
+    start_s, end_s = int(start) / h3.FPS, (int(start) + int(count)) / h3.FPS
+    kept, total = timed_prompt.window_lines(prompt, start_s, end_s)
+    logging.info("Easy H3 分镜提示词：%.2f-%.2f 秒这一窗用 %d/%d 行带时间的动作", start_s, end_s, kept, total)
+    return timed_prompt.window_prompt(prompt, start_s, end_s)
+
+
+def _remake_conditioning(bundle, prompt, width, height, length, items: list[_MediaInput], *,
+                         refmod_data=None, picture_labels: Mapping[int, int] | None = None, face_blur=None,
+                         face_detector: str = remake_mode.FACE_DETECTOR):
+    """Remake 替换: reference video 1 is the source to edit, the pictures the new look.
+
+    The conditioning the Viggle Remake swap LoRA was trained on (see remake.py):
+    text-only labels, the source on the output canvas without its audio, the
+    soundtrack (silence without one) held clean as the target audio.
+    ``face_blur`` (None = off, a level 1-5 or "auto") blurs the source face
+    before it is encoded, so the look comes from the pictures (H3 动作迁移预处理).
+    """
+    if refmod_data:
+        raise ValueError("Remake 替换模式不能和 RefMod 一起用。")
+    prompt = timed_prompt.strip_time_tags(prompt)
+    latent, frame_count = h3._empty_av_latent(width, height, length)
+    images = [item for item in items if item.media_type == "image"]
+    videos = [item for item in items if item.media_type == "video"]
+    if not videos:
+        raise ValueError("Remake 替换模式需要参考视频 1（要替换人物的原视频）。")
+    if not images:
+        raise ValueError("Remake 替换模式需要至少一张参考图（目标人物）。")
+    if len(videos) > 1 or any(item.media_type == "audio" for item in items):
+        _LOGGER.warning("Easy H3 Remake 替换：只用参考视频 1 和参考图，其它视频和音频卡不送入模型")
+    source = videos[0]
+    frames, soundtrack, source_fps = _video_parts(source.value)
+    frames = media_options.as_float_frames(_resample_video_frames(frames, source_fps)[:frame_count])
+    if frames.shape[0] < frame_count:
+        frames = torch.cat([frames, frames[-1:].repeat(frame_count - frames.shape[0], 1, 1, 1)])
+    frames = remake_mode.cover(frames, width, height)
+    if face_blur:
+        frames = remake_mode.blur_faces(frames, face_blur, face_detector)
+    if soundtrack is not None:
+        soundtrack = _window_audio(soundtrack, _frame_offset(source.value), frame_count)
+
+    batch = _TEXT_BATCH.get()
+    source_latent = bundle.video_vae.encode(frames)
+    blocks = [{"kind": "video", "latent_t": source_latent.shape[2], "latent_h": height // 16, "latent_w": width // 16,
+               "ref_audio_t": 0, "latent": source_latent, "audio_latent": None}]
+    tag_by_input = {source.input_index: "<Video 1>"}
+    short_edge = min(width, height)
+    for ordinal, item in enumerate(images, start=1):
+        image = item.value
+        if not isinstance(image, torch.Tensor) or image.ndim != 4:
+            raise ValueError("Image references must be IMAGE tensors")
+        target_w, target_h = remake_mode.picture_size(int(image.shape[1]), int(image.shape[2]), short_edge)
+        key = ("remake", id(bundle.video_vae), image.data_ptr(), tuple(image.shape), target_w, target_h)
+        image_latent = batch.image_latents.get(key) if batch is not None else None
+        if image_latent is None:
+            resized = image[:1, ..., :3]
+            if (int(resized.shape[1]), int(resized.shape[2])) != (target_h, target_w):
+                resized = remake_mode.lanczos(resized, target_w, target_h)
+            image_latent = bundle.video_vae.encode(resized)
+            if batch is not None:
+                batch.image_latents[key] = image_latent
+        blocks.append({"kind": "image", "latent_h": target_h // 16, "latent_w": target_w // 16, "latent": image_latent})
+        tag_by_input[item.input_index] = f"<Picture {(picture_labels or {}).get(item.input_index, ordinal)}>"
+
+    kind_tags = {"image": {int(tag.split()[1][:-1]): tag for key, tag in tag_by_input.items() if tag.startswith("<Picture")},
+                 "video": {1: "<Video 1>"}, "audio": {}}
+    resolved_prompt = _resolve_reference_prompt(prompt, tag_by_input, [], 1, 0, kind_tags,
+                                                include_identity_guard=False)
+    segments = remake_mode.label_segments(frame_count, len(images), resolved_prompt)
+    if soundtrack is None:
+        _LOGGER.info("Easy H3 Remake 替换：参考视频 1 的原声没有送入，目标音轨保持静音")
+    latent = remake_mode.held_audio_latent(bundle.audio_vae, soundtrack, latent, frame_count)
+    if batch is not None:
+        batch.jobs.append((bundle.clip, segments, []))
+        return [[None, {"minimax_refs": blocks, _PENDING_TEXT: len(batch.jobs) - 1}]], latent, resolved_prompt
+    conditioning, _hit = _encode_text(bundle.clip, segments, [])
+    conditioning = node_helpers.conditioning_set_values(conditioning, {"minimax_refs": blocks})
+    return conditioning, latent, resolved_prompt
+
+
+def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None, refmod_data=None, remake: bool = False, face_blur=None, face_detector: str = remake_mode.FACE_DETECTOR):
+    if remake:
+        # Remake 替换 (H3 动作迁移预处理): reference video 1 is the source to edit.
+        return _remake_conditioning(bundle, prompt, width, height, length, items,
+                                    refmod_data=refmod_data, face_blur=face_blur, face_detector=face_detector)
+    prompt = timed_prompt.strip_time_tags(prompt)
     latent, frame_count = h3._empty_av_latent(width, height, length)
     ref_items = list(refmod_data[0]) if refmod_data else []
     ref_blocks = list(refmod_data[1]) if refmod_data else []
@@ -4019,7 +4209,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
         if video_w * video_h < canvas_w * canvas_h:
             canvas_w = max(h3.CANVAS_MULTIPLE, round(video_w / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
             canvas_h = max(h3.CANVAS_MULTIPLE, round(video_h / h3.CANVAS_MULTIPLE) * h3.CANVAS_MULTIPLE)
-        frames = _resize_video_frames(frames, canvas_w, canvas_h)
+        # Only the first ``frame_count`` frames are encoded: cut before resizing.
         if frames.shape[0] > frame_count:
             frames = frames[:frame_count]
         count = frames.shape[0]
@@ -4027,7 +4217,7 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
             raise ValueError("Reference videos need at least 5 frames")
         while count % 17 != 5:
             count -= 1
-        frames = frames[:count]
+        frames = _resize_video_frames(frames[:count], canvas_w, canvas_h)
         video_latent = None if text_only else bundle.video_vae.encode(frames)
         audio_latent = None
         audio_t = 0
@@ -4093,9 +4283,11 @@ def _reference_conditioning(bundle, prompt, width, height, length, ref_image_siz
     if refmod_data:
         refmod_compat.validate_reference_tags(resolved_prompt, ref_items)
 
-    tokens = _rh_timed_call("reference tokenization", bundle.clip.tokenize,
-                           resolved_prompt, minimax_ref_items=ref_items)
-    conditioning = _rh_timed_call("reference text encode", bundle.clip.encode_from_tokens_scheduled, tokens)
+    batch = _TEXT_BATCH.get()
+    if batch is not None:
+        batch.jobs.append((bundle.clip, resolved_prompt, ref_items))
+        return [[None, {"minimax_refs": ref_blocks, _PENDING_TEXT: len(batch.jobs) - 1}]], latent, preview_prompt
+    conditioning, _hit = _rh_timed_call("reference text encode", _encode_text, bundle.clip, resolved_prompt, ref_items)
     shapes = [tuple(item[0].shape) if isinstance(item[0], torch.Tensor) else type(item[0]).__name__
               for item in conditioning]
     _LOGGER.info("Easy H3 RH: encoder=%s conditioning_shapes=%s", getattr(bundle, "clip_name", "connected"), shapes)
@@ -4221,10 +4413,13 @@ class FeiHouEasyH3:
         return True
 
     @staticmethod
-    def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None, window=None, hold=0) -> list[_MediaInput]:
+    def _collect_media(kwargs: dict, extra_pnginfo=None, unique_id=None, window=None, hold=0,
+                       head: int | None = None) -> list[_MediaInput]:
         """``window`` = (start_frame, frames) of a motion shot block: gallery videos
         then decode only that part of the file.  ``hold`` = frames of held first
-        frame in front of the timeline (shot md @hold)."""
+        frame in front of the timeline (shot md @hold).  ``head`` = frames the
+        generation encodes: gallery videos decode only that many frames (at H3
+        fps) from the start of their trim / frame window."""
         shot = kwargs.get("production_shot")
         if shot is not None and not shot.get("keep_media"):
             return [_MediaInput(index, item["media_type"],
@@ -4248,10 +4443,19 @@ class FeiHouEasyH3:
                         _embedded_media_path(filename), options, _audio_trim_range(trim) if trim.strip() else None,
                         window[0], window[1], image_area, float(h3.FPS), hold)
                     trim = ""
+                elif media_type == "video" and head:
+                    value = media_options.load_video_head(
+                        _embedded_media_path(filename), options, _audio_trim_range(trim) if trim.strip() else None,
+                        head, image_area, float(h3.FPS))
+                    trim = ""
                 elif media_type == "video" and options is not None:
                     # 媒体设置: frame rate, size and frame window applied while decoding.
                     value = media_options.load_video(_embedded_media_path(filename), options, image_area)
                     trim = ""
+                elif media_type == "video" and (
+                        default := media_options.default_options(_embedded_media_path(filename))) is not None:
+                    # No 媒体设置: a source above 720P is decoded at 720P; the time trim still applies.
+                    value = media_options.load_video(_embedded_media_path(filename), default, image_area)
                 else:
                     value = _load_embedded_media(filename, media_type)
             if media_type == "image" and image_area is None and isinstance(value, torch.Tensor) and value.ndim == 4:
@@ -4354,11 +4558,20 @@ class FeiHouEasyH3:
         # each gallery video is decoded only for this block.
         motion_shot = (isinstance(production_shot, dict) and bool(production_shot.get("keep_media"))
                        and isinstance(production_shot.get("motion"), dict))
+        # 动作迁移分段 encodes each window itself; a Sample Enhancer graph (no
+        # segment node, flagged by 分镜提示词) needs Setup to encode the block.
+        motion_deferred = motion_shot and production_shot["motion"].get("segment", True) is not False
         window = None
         hold = int(production_shot["motion"].get("hold_frames") or 0) if motion_shot else 0
         if motion_shot and int(production_shot["motion"].get("frames") or 0) > 0:
             window = (int(production_shot["motion"].get("start_frame") or 0), int(production_shot["motion"]["frames"]))
-        items = _rh_timed_call("media load", cls._collect_media, kwargs, extra_pnginfo, unique_id, window, hold)
+        head = None
+        if not motion_shot and _duration_alignment(audio_duration_auto) == "off":
+            # Setup encodes at most as many reference frames as it generates
+            # (see _reference_conditioning): decode no more than that.  Duration
+            # alignment needs the whole video to measure it.
+            head = h3.align_frame_count(max(5, _frame_length(min(MAX_SECONDS, max(MIN_SECONDS, float(seconds))), fps)))
+        items = _rh_timed_call("media load", cls._collect_media, kwargs, extra_pnginfo, unique_id, window, hold, head)
         # Decode/crop each video once; duration and conditioning share these frames.
         items = [_MediaInput(item.input_index, item.media_type,
                              _trim_reference_video(item.value, item.audio_trim), item.filename, "", item.slot)
@@ -4491,7 +4704,7 @@ class FeiHouEasyH3:
             if counts["image"] == 0 and counts["video"] == 0 and not any(mod.kind in {"image", "video"} for mod, _ in refmods):
                 raise ValueError("Reference mode needs an image or video in addition to audio")
             model = h3_bundle.model_for("ref2va")
-            if motion_shot:
+            if motion_deferred:
                 # Motion Segment · RH encodes each window through the segment
                 # builder; encoding the whole reference video here would only be
                 # thrown away.  It reads the canvas size from this latent.
@@ -4506,10 +4719,11 @@ class FeiHouEasyH3:
             )
             source_frames, source_audio = _segment_source(source_items)
             segment_builder = H3SegmentBuilder(
-                build=lambda start, count, w, h, trigger_prefix="", video_sizes=None, end=None, soundtrack=True, _p=prompt, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
-                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_p}" if trigger_prefix else _p, w, h, count, _r,
+                build=lambda start, count, w, h, trigger_prefix="", video_sizes=None, end=None, soundtrack=True, remake=False, face_blur=None, face_detector=remake_mode.FACE_DETECTOR, _p=prompt, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
+                    _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_window_text(_p, start, count)}" if trigger_prefix else _window_text(_p, start, count), w, h, count, _r,
                                             _window_reference_items(list(_i), start, count, video_sizes, w, h, _r, end, soundtrack),
-                                            text_only=_t, reference_cache=reference_cache, refmod_data=_m)[:2],
+                                            text_only=_t, reference_cache=reference_cache, refmod_data=_m, remake=remake,
+                                            face_blur=face_blur, face_detector=face_detector)[:2],
                 source_frames=source_frames,
                 source_audio=source_audio,
                 source_window=_segment_source_window(source_items),
@@ -4590,6 +4804,7 @@ class FeiHouEasyH3:
             highres_rebuilder=highres_rebuilder,
             reference_map=reference_map,
             segment_builder=segment_builder,
+            motion_placeholder=bool(motion_deferred),
         )
         if h3_bundle.force_offload_enabled:
             _release_auxiliary_models_for_sampling(h3_bundle, phase="first-pass sampling")

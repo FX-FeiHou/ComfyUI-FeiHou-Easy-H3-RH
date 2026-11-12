@@ -123,6 +123,15 @@ def _context_class():
     return MiniMaxH3Context
 
 
+def _refuse_motion_placeholder(context: Any) -> None:
+    """Setup fed by 分镜提示词 encodes nothing itself: only 动作迁移分段 can sample it."""
+    if getattr(context, "motion_placeholder", False):
+        raise ValueError(
+            "这个 Setup 接了「分镜提示词」，而图里有「动作迁移分段」，所以 h3_context 只是给它用的占位（没有编码参考，latent 只有 5 帧）。"
+            "要么让采样经过「动作迁移分段」：一采用它的输出，2nd Sample Enhancer 的 h3_context 接「动作迁移分段」的 h3_context；"
+            "要么用 1st/2nd Sample Enhancer（例如 v8 工作流）：把「动作迁移分段」删掉或旁路，Setup 就会直接编码每个分镜块。")
+
+
 def _with_default_trigger_words(context: Any, enabled: bool) -> Any:
     """Rebuild the current-canvas conditioning with the hidden trigger prefix.
 
@@ -247,9 +256,13 @@ def _reconcile(upscaled: dict, template: dict | None) -> dict:
             )
         mask = template.get("noise_mask")
         if mask is not None:
-            _, audio_mask = _split_av(mask)
+            video_mask, audio_mask = _split_av(mask)
             if isinstance(audio_mask, torch.Tensor) and bool(torch.any(audio_mask < 1.0)):
                 audio = t_audio
+            if isinstance(video_mask, torch.Tensor) and bool(torch.any(video_mask < 1.0)):
+                # Frames held clean at the HIGH canvas (a Remake prefix) replace their upscaled copy.
+                held = (video_mask < 1.0).to(video.device)
+                video = torch.where(held, t_video.to(video), video)
             result["noise_mask"] = mask
     result["samples"] = comfy.nested_tensor.NestedTensor((video, audio))
     return result
@@ -305,6 +318,7 @@ class FeiHouEasyH3DualSample1st:
                 bridge_strength, cfg=1.0, negative_prompt="", scheduler="simple", default_trigger_words=False):
         if not isinstance(h3_context, _context_class()):
             raise ValueError("h3_context 必须接 ComfyUI-FeiHou-Easy-H3 主节点的 h3_context")
+        _refuse_motion_placeholder(h3_context)
         total_steps, first_steps = int(total_steps), int(first_steps)
         if not 1 <= first_steps < total_steps:
             raise ValueError("first_steps 必须小于 total_steps")
@@ -368,6 +382,7 @@ class FeiHouEasyH3DualSample2nd:
     @staticmethod
     def prepare(h3_context, latent_upscaler, upscale_by, second_steps, model=None, default_trigger_words=False, **kwargs):
         first_latent = kwargs.get("1st_latent")
+        _refuse_motion_placeholder(h3_context)
         plan = getattr(h3_context, "dual_plan", None) if isinstance(h3_context, _context_class()) else None
         if not plan:
             raise ValueError("h3_context 必须接 Dual Sample 1st 的 h3_context 输出")
@@ -397,11 +412,17 @@ class FeiHouEasyH3DualSample2nd:
         latent = _reconcile(upscaled, template)
 
         refine_model = model if model is not None else plan["model"]
+        if plan.get("remake"):
+            # Remake 替换 (Motion Segment): keyframes stay dropped below sigma 0.9 on this model too.
+            from . import remake as remake_mode
+            refine_model = remake_mode.keyframe_until(refine_model)
         patched, sampler, _ = dual_clock.setup_dual_clock_sampling(
             refine_model, latent, 1, SHIFT_VIDEO, SHIFT_AUDIO, plan["sampler_name"], dual_clock.DEFAULT_SCHEDULER_NAME,
         )
         tail = plan.get("tail")
-        if int(second_steps) not in PUBLISHED_REFINE_SIGMAS and tail is not None and int(second_steps) == tail.numel() - 1:
+        if plan.get("remake") and tail is not None:
+            sigmas = tail.clone()  # Remake: the rest of the swap schedule; second_steps is not used
+        elif int(second_steps) not in PUBLISHED_REFINE_SIGMAS and tail is not None and int(second_steps) == tail.numel() - 1:
             sigmas = tail.clone()  # the rest of the 1st-pass schedule
         else:
             sigmas = _refine_sigmas(second_steps, float(plan.get("start_sigma", PUBLISHED_REFINE_SIGMAS[5][0])))

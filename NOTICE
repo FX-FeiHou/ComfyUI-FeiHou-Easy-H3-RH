@@ -32,3 +32,14 @@ contributors. The retained source is in third_party/h3_dual_clock.py,
 third_party/h3_learned_upscale.py and third_party/h3_semantic_bridge*.py and
 is distributed under GNU GPL-3.0-or-later; see
 LICENSES/GPL-3.0-or-later-comfyui-minimax-h3-audio.txt.
+
+The Remake 替换 mode (remake.py) is adapted from the Viggle Remake ComfyUI
+nodes:
+  Viggle Remake
+  https://huggingface.co/Viggle/Viggle-Remake
+  Copyright Viggle
+
+That code is published under the Apache License, Version 2.0
+(https://www.apache.org/licenses/LICENSE-2.0). remake.py carries its SPDX
+identifier; the adapted parts are the 2 fps time-stamp labels, the held
+target audio, the keyframe release below sigma 0.9 and the clean prefix.

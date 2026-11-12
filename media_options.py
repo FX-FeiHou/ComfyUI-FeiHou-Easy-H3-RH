@@ -28,6 +28,8 @@ VIDEO_SIZE_ORIGINAL = "原始"
 VIDEO_SIZE_MATCH_IMAGE = "匹配参考图"
 VIDEO_SHORT_EDGES = {f"{edge}P": edge for edge in (360, 480, 540, 640, 720)}
 VIDEO_SIZES = [VIDEO_SIZE_ORIGINAL, VIDEO_SIZE_MATCH_IMAGE, *VIDEO_SHORT_EDGES]
+# A card without its own choice: a larger source is read at 720P, a smaller one as it is.
+VIDEO_SIZE_DEFAULT = "720P"
 DEFAULT_FPS = 24.0
 CANVAS_MULTIPLE = 32
 
@@ -52,19 +54,22 @@ def parse_video_options(value: Any) -> dict | None:
             return default
         return result if math.isfinite(result) and result >= 0 else default
 
-    size = str(value.get("size") or VIDEO_SIZE_ORIGINAL)
+    size = str(value.get("size") or VIDEO_SIZE_DEFAULT)
     return {
         "fps": min(120.0, number("fps", DEFAULT_FPS, float)),
-        "size": size if size in VIDEO_SIZES else VIDEO_SIZE_ORIGINAL,
+        "size": size if size in VIDEO_SIZES else VIDEO_SIZE_DEFAULT,
         "skip": int(number("skip", 0, int)),
         "cap": int(number("cap", 0, int)),
     }
 
 
 def fit_short_edge(width: int, height: int, short_edge: int) -> tuple[int, int]:
-    scale = min(1.0, float(short_edge) / max(1, min(width, height)))
+    """The short edge lands exactly on the preset; a source at or below it keeps its size."""
+    if min(width, height) <= short_edge:
+        return width, height
     step = CANVAS_MULTIPLE
-    return max(step, round(width * scale / step) * step), max(step, round(height * scale / step) * step)
+    long_edge = max(step, round(max(width, height) * float(short_edge) / min(width, height) / step) * step)
+    return (short_edge, long_edge) if width <= height else (long_edge, short_edge)
 
 
 def fit_area(width: int, height: int, area: float) -> tuple[int, int]:
@@ -116,6 +121,34 @@ def probe_video(path: str) -> dict:
             "height": int(stream.codec_context.height),
             "has_audio": bool(container.streams.audio),
         }
+
+
+def default_options(path: str) -> dict | None:
+    """Options for a card without its own 媒体设置, or None when its source is small enough.
+
+    The source's own frame rate is kept: only the size differs from loading the file directly.
+    """
+    info = probe_video(path)
+    if target_size(info["width"], info["height"], VIDEO_SIZE_DEFAULT, None) is None:
+        return None
+    return {"fps": 0.0, "size": VIDEO_SIZE_DEFAULT, "skip": 0, "cap": 0}
+
+
+def as_float_frames(frames: torch.Tensor) -> torch.Tensor:
+    """Frames as float 0-1: decoded reference videos are kept as uint8 (a quarter of the memory)."""
+    if isinstance(frames, torch.Tensor) and frames.dtype == torch.uint8:
+        return frames.to(torch.float32).div_(255.0)
+    return frames
+
+
+def _stack_frames(arrays: list[np.ndarray]) -> torch.Tensor:
+    """Decoded RGB arrays as one uint8 [N, H, W, 3] tensor, freeing each array once copied."""
+    height, width = arrays[0].shape[:2]
+    images = torch.empty((len(arrays), height, width, 3), dtype=torch.uint8)
+    for position in range(len(arrays)):
+        images[position] = torch.from_numpy(arrays[position])
+        arrays[position] = None
+    return images
 
 
 def _frame_array(frame, size: tuple[int, int] | None) -> np.ndarray:
@@ -249,15 +282,13 @@ def load_video_window(path: str, options: dict | None, trim: tuple[float, float]
     count = max(1, min(int(frames), hold + total - start_frame))
     indexes = hold_indexes(start_frame, count, hold, total)
     first = int(indexes[0])
-    size = options["size"] if options is not None else VIDEO_SIZE_ORIGINAL
+    size = options["size"] if options is not None else VIDEO_SIZE_DEFAULT
     arrays, _rate = _sample_frames(path, fps, round(origin * fps) + first, int(indexes[-1]) - first + 1,
                                    lambda width, height: target_size(width, height, size, image_area))
     if not arrays:
         raise ValueError(f"参考视频「{os.path.basename(path)}」在第 {first} 帧之后没有画面（视频长度 {total} 帧）")
-    height, width = arrays[0].shape[:2]
-    decoded = torch.empty((len(arrays), height, width, 3), dtype=torch.float32)
-    for position, array in enumerate(arrays):
-        decoded[position] = torch.from_numpy(array).to(torch.float32).div_(255.0)
+    decoded = _stack_frames(arrays)
+    height, width = decoded.shape[1:3]
     images = decoded[(indexes - first).clamp(max=len(arrays) - 1)] if hold else decoded
     audio = _slice_audio(path, origin, origin + length) if info["has_audio"] else None
     audio = hold_audio(audio, hold / fps)
@@ -266,6 +297,29 @@ def load_video_window(path: str, options: dict | None, trim: tuple[float, float]
                  f"，开头定格 {hold} 帧" if hold else "", width, height)
     return {"images": images, "audio": audio, "fps": float(fps), "frame_offset": start_frame,
             "total_frames": hold + total}
+
+
+def load_video_head(path: str, options: dict | None, trim: tuple[float, float] | None,
+                    frames: int, image_area: float | None = None, fps: float = 24.0) -> dict:
+    """Only the first ``frames`` frames of the card's timeline, at ``fps``, with their own audio.
+
+    For a plain generation: Setup encodes at most as many reference frames as
+    it generates, so a 20 s video in a 6 s generation decodes 6 s.  The
+    timeline is the 媒体设置 frame window, or else the card's time trim.
+    """
+    origin, length, info = timeline(path, options, trim)
+    count = max(1, min(int(frames), max(1, round(length * fps))))
+    size = options["size"] if options is not None else VIDEO_SIZE_DEFAULT
+    arrays, _rate = _sample_frames(path, fps, round(origin * fps), count,
+                                   lambda width, height: target_size(width, height, size, image_area))
+    if not arrays:
+        raise ValueError(f"参考视频「{os.path.basename(path)}」从 {origin:.2f} 秒起没有画面")
+    images = _stack_frames(arrays)
+    height, width = images.shape[1:3]
+    audio = _slice_audio(path, origin, origin + len(arrays) / fps) if info["has_audio"] else None
+    logging.info("Easy H3 媒体: %s 只读生成需要的 %.2f-%.2f 秒（%d 帧，视频共 %.2f 秒）%dx%d",
+                 os.path.basename(path), origin, origin + len(arrays) / fps, len(arrays), length, width, height)
+    return {"images": images, "audio": audio, "fps": float(fps)}
 
 
 def load_video(path: str, options: dict, image_area: float | None = None) -> dict:
@@ -277,10 +331,8 @@ def load_video(path: str, options: dict, image_area: float | None = None) -> dic
     if not arrays:
         raise ValueError(f"参考视频「{os.path.basename(path)}」按媒体设置没有读到任何帧"
                          f"（跳过 {options['skip']} 帧，可能已超过视频长度）")
-    height, width = arrays[0].shape[:2]
-    images = torch.empty((len(arrays), height, width, 3), dtype=torch.float32)
-    for position, array in enumerate(arrays):
-        images[position] = torch.from_numpy(array).to(torch.float32).div_(255.0)
+    images = _stack_frames(arrays)
+    height, width = images.shape[1:3]
     start = options["skip"] / rate
     audio = _slice_audio(path, start, start + len(arrays) / rate) if has_audio else None
     logging.info("Easy H3 媒体设置: %s → %d 帧 %dx%d @ %.3gfps（跳过 %d 帧）",

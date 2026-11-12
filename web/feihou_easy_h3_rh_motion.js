@@ -216,6 +216,16 @@ function firstMarkdownFile(event) {
   return null;
 }
 
+// During dragover the browser hides file names (dataTransfer.files is empty);
+// only each item's kind and MIME type are readable.  A .md file is usually
+// text/markdown, or "" on Windows; images, videos and workflows are not taken.
+function mayBeMarkdownDrag(event) {
+  const items = event?.dataTransfer?.items;
+  if (!items || !items.length) return false;
+  return [...items].some((item) => item.kind === "file"
+    && (item.type === "" || /^text\/(markdown|x-markdown|plain)$/.test(item.type)));
+}
+
 function shotNodeUnder(event) {
   const canvas = app.canvas;
   if (!canvas || typeof canvas.convertEventToCanvasOffset !== "function") return null;
@@ -237,14 +247,21 @@ function installDropTarget() {
   if (window.__feihouRHMdDropInstalled) return;
   window.__feihouRHMdDropInstalled = true;
   // Capture phase on the document: runs before ComfyUI's own canvas drop logic.
+  // Accepting the dragover here also lets a drop land on the node's prompt
+  // box (a textarea refuses file drags by default, so no drop event came).
   document.addEventListener("dragover", (event) => {
-    if (!firstMarkdownFile(event) || !shotNodeUnder(event)) return;
+    if (!mayBeMarkdownDrag(event) || !shotNodeUnder(event)) return;
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
   }, true);
   document.addEventListener("drop", (event) => {
     const node = shotNodeUnder(event);
     const file = firstMarkdownFile(event);
+    if (node && !file && event.dataTransfer?.files?.length && /^(TEXTAREA|INPUT)$/.test(event.target?.tagName || "")) {
+      // A non-md file let through by the dragover above: don't let the browser open it.
+      event.preventDefault();
+      return;
+    }
     if (!node || !file) return;
     event.preventDefault();
     event.stopPropagation();
@@ -469,97 +486,222 @@ const SEGMENT_LEGACY_WIDGETS = [
   "segmentation", "context_window_frames", "context_overlap_frames",
 ];
 
-// segment_frames used to be a number: show it as the option with seconds.
-function labelSegmentFrames(node) {
-  const widget = node.widgets?.find((item) => item?.name === "segment_frames");
-  const options = widget?.options?.values;
-  if (!widget || !Array.isArray(options)) return;
-  const frames = Number(String(widget.value).split(" ")[0]);
-  if (!Number.isFinite(frames) || options.includes(widget.value)) return;
-  const grid = Math.max(5, frames) - ((Math.max(5, frames) - 5) % 17);
-  const match = options.find((option) => Number(String(option).split(" ")[0]) === grid);
-  if (!match) return;
-  widget.value = match;
-  if (widget._state) widget._state.value = match;
+// 分段方式 picks what segment_frames / overlap_frames mean: segment length and
+// tail overlap (帧窗口 / 不分段) or window length and window overlap (上下文窗口).
+// Each mode shows only its own options and remembers its own values
+// (properties.feihou_segment_modes), so switching back restores them; a mode
+// never set before starts from its recommended values.
+const SEG_AUTO = "自动";
+const SEG_WHOLE = "不分段";
+const SEG_CHAIN = "帧窗口";
+const SEG_CONTEXT = "上下文窗口";
+const SEGMENT_MODE_FIELDS = ["segment_frames", "overlap_frames"];
+// 自动 follows the md (@分段); like 不分段 it greys out every field below.
+const SEGMENT_MODES = {
+  [SEG_AUTO]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
+  [SEG_WHOLE]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
+  [SEG_CHAIN]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
+  [SEG_CONTEXT]: { frames: [124, 362], overlap: ["34", "68", "102"], segment_frames: 345, overlap_frames: "68" },
+};
+
+const frameCount = (value) => Number(String(value).split(" ")[0]);
+
+function segmentWidget(node, name) {
+  return node.widgets?.find((item) => item?.name === name);
 }
 
-// 帧窗口 off: segment_frames and overlap_frames do nothing, show them greyed out.
-const FRAME_WINDOW_FIELDS = ["segment_frames", "overlap_frames"];
-
-function syncFrameWindowFields(node) {
-  const toggle = node.widgets?.find((item) => item?.name === "frame_window");
-  if (!toggle) return;
-  const off = toggle.value === false;
-  for (const widget of node.widgets || []) {
-    if (!FRAME_WINDOW_FIELDS.includes(widget?.name)) continue;
-    widget.disabled = off;
-    widget.options ||= {};
-    widget.options.disabled = off;
-  }
-  node.setDirtyCanvas?.(true, true);
-}
-
-function watchFrameWindow(node) {
-  const toggle = node.widgets?.find((item) => item?.name === "frame_window");
-  if (!toggle || toggle.__h3FrameWindowWatched) return;
-  toggle.__h3FrameWindowWatched = true;
-  const callback = toggle.callback;
-  toggle.callback = function () {
-    const result = callback?.apply(this, arguments);
-    syncFrameWindowFields(node);
-    return result;
-  };
-  syncFrameWindowFields(node);
-}
-
-function setSegmentWidget(node, name, value) {
-  if (value === null || value === undefined) return;
-  const widget = node.widgets?.find((item) => item?.name === name);
-  if (!widget) return;
-  // A value from another layout never lands on the wrong kind of field: a
-  // switch takes only true/false, an option list only its own options (the
-  // old numeric segment_frames is relabelled afterwards).
-  if (typeof widget.value === "boolean" && typeof value !== "boolean") return;
-  const options = widget.options?.values;
-  if (Array.isArray(options) && !options.includes(value) && !(name === "segment_frames" && Number.isFinite(Number(value)))) return;
+function setWidgetValue(widget, value) {
   widget.value = value;
   if (widget._state) widget._state.value = value;
 }
 
-function restoreSegmentByPosition(node, names, values) {
-  if (!Array.isArray(values)) return;
-  names.forEach((name, index) => { if (index < values.length) setSegmentWidget(node, name, values[index]); });
+// The backend lists every option of both modes; keep that full list once.
+function allOptions(widget) {
+  if (!widget.__h3AllOptions) widget.__h3AllOptions = [...(widget.options?.values || [])];
+  return widget.__h3AllOptions;
+}
+
+function segmentModeOf(value) {
+  const mode = value === "接续" ? SEG_CHAIN : value;
+  return SEGMENT_MODES[mode] ? mode : SEG_CHAIN;
+}
+
+function modeOptions(widget, name, mode) {
+  const spec = SEGMENT_MODES[mode];
+  return allOptions(widget).filter((option) => {
+    if (name === "overlap_frames") return spec.overlap.includes(String(option));
+    const frames = frameCount(option);
+    return frames >= spec.frames[0] && frames <= spec.frames[1];
+  });
+}
+
+// An option of this mode for a saved value: the same option, or a bare frame
+// count (segment_frames used to be a number) aligned down to 5+17N.
+function matchOption(options, name, value) {
+  if (value === null || value === undefined) return undefined;
+  if (options.includes(value)) return value;
+  if (name === "overlap_frames") return options.find((option) => String(option) === String(value));
+  const frames = frameCount(value);
+  if (!Number.isFinite(frames)) return undefined;
+  const grid = Math.max(5, frames) - ((Math.max(5, frames) - 5) % 17);
+  return options.find((option) => frameCount(option) === grid);
+}
+
+function recommendedOption(options, name, mode) {
+  const want = SEGMENT_MODES[mode][name];
+  return matchOption(options, name, want) ?? options[0];
+}
+
+function segmentMemory(node) {
+  node.properties ||= {};
+  if (!node.properties.feihou_segment_modes || typeof node.properties.feihou_segment_modes !== "object") {
+    node.properties.feihou_segment_modes = {};
+  }
+  return node.properties.feihou_segment_modes;
+}
+
+function rememberSegmentMode(node, mode) {
+  const entry = {};
+  for (const name of SEGMENT_MODE_FIELDS) {
+    const widget = segmentWidget(node, name);
+    if (widget) entry[name] = widget.value;
+  }
+  segmentMemory(node)[mode] = entry;
+}
+
+// Show `mode`'s options.  switching: the mode's remembered values, else its
+// recommended ones.  Otherwise (load / create): keep the current value when
+// it belongs to the mode.  不分段 greys out segment_frames (overlap_frames
+// still serves @split segments and @continue).
+function applySegmentMode(node, mode, switching) {
+  const memory = segmentMemory(node)[mode] || {};
+  for (const name of SEGMENT_MODE_FIELDS) {
+    const widget = segmentWidget(node, name);
+    if (!widget) continue;
+    const options = modeOptions(widget, name, mode);
+    if (!options.length) continue;
+    widget.options ||= {};
+    widget.options.values = options;
+    const value = (switching ? undefined : matchOption(options, name, widget.value))
+      ?? matchOption(options, name, memory[name])
+      ?? recommendedOption(options, name, mode);
+    setWidgetValue(widget, value);
+    const off = mode === SEG_AUTO || mode === SEG_WHOLE;
+    widget.disabled = off;
+    widget.options.disabled = off;
+  }
+  // 每段上限 only splits context-window blocks.
+  const segmentCap = segmentWidget(node, "context_segment");
+  if (segmentCap) {
+    const off = mode !== SEG_CONTEXT;
+    segmentCap.disabled = off;
+    segmentCap.options ||= {};
+    segmentCap.options.disabled = off;
+  }
+  node.__h3SegmentMode = mode;
+  rememberSegmentMode(node, mode);
+  node.setDirtyCanvas?.(true, true);
+}
+
+function syncSegmentMode(node) {
+  const widget = segmentWidget(node, "segmentation");
+  if (!widget) return;
+  const mode = segmentModeOf(widget.value);
+  if (widget.value !== mode) setWidgetValue(widget, mode);
+  applySegmentMode(node, mode, false);
+}
+
+function watchSegmentation(node) {
+  const widget = segmentWidget(node, "segmentation");
+  if (!widget || widget.__h3SegmentWatched) return;
+  widget.__h3SegmentWatched = true;
+  for (const name of SEGMENT_MODE_FIELDS) {
+    const field = segmentWidget(node, name);
+    if (field) allOptions(field);
+  }
+  const callback = widget.callback;
+  widget.callback = function () {
+    const result = callback?.apply(this, arguments);
+    const mode = segmentModeOf(widget.value);
+    const previous = node.__h3SegmentMode;
+    if (previous && previous !== mode) {
+      // The fields still hold the previous mode's values: keep them for it.
+      rememberSegmentMode(node, previous);
+      applySegmentMode(node, mode, true);
+    } else {
+      applySegmentMode(node, mode, false);
+    }
+    return result;
+  };
+  syncSegmentMode(node);
+}
+
+// Saves from before the shared fields: frame_window off meant 不分段, and
+// context_window_frames / context_overlap_frames were the window fields.  They
+// become each mode's remembered values.
+function migrateSegmentValues(node, values) {
+  const migrated = { ...values };
+  const hasFrameWindow = "frame_window" in values;
+  const hasContext = "context_window_frames" in values || "context_overlap_frames" in values;
+  if (!hasFrameWindow && !hasContext) return migrated;
+  const memory = segmentMemory(node);
+  let mode = segmentModeOf(values.segmentation);
+  if (mode === SEG_CHAIN && values.frame_window === false) mode = SEG_WHOLE;
+  // An old save has no memory of its own (only defaults from node creation).
+  const chain = { segment_frames: values.segment_frames, overlap_frames: values.overlap_frames };
+  memory[SEG_CHAIN] = chain;
+  memory[SEG_WHOLE] = { ...chain };
+  if (hasContext) {
+    memory[SEG_CONTEXT] = {
+      segment_frames: values.context_window_frames ?? "345",
+      overlap_frames: values.context_overlap_frames ?? "68",
+    };
+  }
+  migrated.segmentation = mode;
+  if (mode === SEG_CONTEXT && memory[SEG_CONTEXT]) Object.assign(migrated, memory[SEG_CONTEXT]);
+  delete migrated.frame_window;
+  delete migrated.context_window_frames;
+  delete migrated.context_overlap_frames;
+  return migrated;
+}
+
+function setSegmentWidget(node, name, value) {
+  if (value === null || value === undefined) return;
+  const widget = segmentWidget(node, name);
+  if (!widget) return;
+  // A value from another layout never lands on the wrong kind of field: a
+  // switch takes only true/false, an option list only its own options (the
+  // old numeric segment_frames is relabelled by applySegmentMode).
+  if (typeof widget.value === "boolean" && typeof value !== "boolean") return;
+  const options = SEGMENT_MODE_FIELDS.includes(name) ? allOptions(widget) : widget.options?.values;
+  if (Array.isArray(options) && !options.includes(value) && !(name === "segment_frames" && Number.isFinite(frameCount(value)))
+      && !(name === "segmentation" && value === "接续")) return;
+  setWidgetValue(widget, value);
+}
+
+function applySegmentValues(node, values) {
+  const migrated = migrateSegmentValues(node, values);
+  // segmentation first: the shared fields are then checked against its options.
+  setSegmentWidget(node, "segmentation", migrated.segmentation);
+  Object.entries(migrated).forEach(([name, value]) => { if (name !== "segmentation") setSegmentWidget(node, name, value); });
+  syncSegmentMode(node);
+}
+
+function segmentValuesByPosition(names, values) {
+  if (!Array.isArray(values)) return null;
+  const named = {};
+  names.forEach((name, index) => { if (index < values.length) named[name] = values[index]; });
+  return named;
 }
 
 function segmentRestorer(node, info) {
-  const named = info?.properties?.feihou_segment_widgets;
-  if (named && typeof named === "object") {
-    return () => Object.entries(named).forEach(([name, value]) => setSegmentWidget(node, name, value));
+  let values = info?.properties?.feihou_segment_widgets;
+  if (!values || typeof values !== "object") {
+    const layout = Number(info?.properties?.feihou_segment_layout);
+    const names = layout === 2 ? SEGMENT_LAYOUT2_WIDGETS : layout >= SEGMENT_LAYOUT ? null : SEGMENT_LEGACY_WIDGETS;
+    values = names ? segmentValuesByPosition(names, info?.widgets_values) : null;
   }
-  const layout = Number(info?.properties?.feihou_segment_layout);
-  const names = layout === 2 ? SEGMENT_LAYOUT2_WIDGETS : layout >= SEGMENT_LAYOUT ? null : SEGMENT_LEGACY_WIDGETS;
-  return names ? () => restoreSegmentByPosition(node, names, info?.widgets_values) : null;
-}
-
-// Context windows are switched off for now: hide their fields and keep 帧窗口.
-const SEGMENT_HIDDEN_WIDGETS = ["segmentation", "context_window_frames", "context_overlap_frames"];
-
-function hideSegmentContextWidgets(node) {
-  for (const widget of node.widgets || []) {
-    if (!SEGMENT_HIDDEN_WIDGETS.includes(widget?.name)) continue;
-    if (widget.name === "segmentation" && widget.value !== "帧窗口") {
-      widget.value = "帧窗口";
-      if (widget._state) widget._state.value = widget.value;
-    }
-    widget.hidden = true;
-    widget.options ||= {};
-    widget.options.hidden = true;
-    widget.type = "hidden";
-    widget.computeSize = () => [0, -4];
-    if (widget.inputEl) widget.inputEl.style.display = "none";
-  }
-  const size = node.computeSize?.();
-  if (size) node.setSize?.([node.size?.[0] || size[0], size[1]]);
+  return values ? () => applySegmentValues(node, values) : null;
 }
 
 function installSegmentLayout(nodeType) {
@@ -568,36 +710,92 @@ function installSegmentLayout(nodeType) {
     const result = created?.apply(this, arguments);
     this.properties ||= {};
     this.properties.feihou_segment_layout = SEGMENT_LAYOUT;
-    hideSegmentContextWidgets(this);
-    watchFrameWindow(this);
+    watchSegmentation(this);
     return result;
   };
   const configured = nodeType.prototype.onConfigure;
   nodeType.prototype.onConfigure = function (info) {
     const result = configured?.apply(this, arguments);
-    const restore = segmentRestorer(this, info);
-    if (restore) {
-      restore();
-      // Some frontends re-apply widgets_values by position after onConfigure.
-      setTimeout(() => { restore(); syncFrameWindowFields(this); this.setDirtyCanvas?.(true, true); }, 0);
-    }
     this.properties ||= {};
     this.properties.feihou_segment_layout = SEGMENT_LAYOUT;
-    hideSegmentContextWidgets(this);
-    labelSegmentFrames(this);
-    watchFrameWindow(this);
-    setTimeout(() => { hideSegmentContextWidgets(this); labelSegmentFrames(this); syncFrameWindowFields(this); }, 0);
+    watchSegmentation(this);
+    const restore = segmentRestorer(this, info);
+    if (restore) restore();
+    else syncSegmentMode(this);
+    // Some frontends re-apply widgets_values by position after onConfigure.
+    setTimeout(() => { if (restore) restore(); else syncSegmentMode(this); }, 0);
     return result;
   };
   const serialized = nodeType.prototype.onSerialize;
   nodeType.prototype.onSerialize = function (info) {
     const result = serialized?.apply(this, arguments);
+    if (this.__h3SegmentMode) rememberSegmentMode(this, this.__h3SegmentMode);
     info.properties ||= {};
     info.properties.feihou_segment_layout = SEGMENT_LAYOUT;
+    info.properties.feihou_segment_modes = { ...segmentMemory(this) };
     info.properties.feihou_segment_widgets = Object.fromEntries(
       (this.widgets || []).filter((widget) => widget?.name).map((widget) => [widget.name, widget.value]));
     return result;
   };
+}
+
+// save_segments: show each saved segment in the video node(s) fed by Motion
+// Collect's images output (e.g. Video Combine V2), which itself only runs on
+// the block's last segment.
+function showSegmentVideo(collect, video) {
+  const links = collect?.outputs?.[0]?.links || [];
+  for (const id of links) {
+    const link = app.graph?.links?.[id] ?? app.graph?.links?.get?.(id);
+    const target = link ? app.graph.getNodeById(link.target_id) : null;
+    if (typeof target?.updateParameters !== "function") continue;
+    target.updateParameters({ ...video }, true);
+    const preview = target.widgets?.find((widget) => widget?.name === "videopreview");
+    if (preview?.value) preview.value.hidden = false;
+    target.setDirtyCanvas?.(true, true);
+  }
+}
+
+// Motion Collect saved before filename_prefix was removed (2026-11-09):
+// [audio_output, auto_queue, color_match, save_segments, filename_prefix,
+// color_match_strength].  Positional loading put the prefix text into
+// color_match_strength; take the strength from its old slot.
+function installCollectLayout(nodeType) {
+  const configured = nodeType.prototype.onConfigure;
+  nodeType.prototype.onConfigure = function (info) {
+    const result = configured?.apply(this, arguments);
+    const values = info?.widgets_values;
+    if (Array.isArray(values) && values.length === 6 && typeof values[4] === "string") {
+      const strength = this.widgets?.find((widget) => widget?.name === "color_match_strength");
+      if (strength) {
+        strength.value = typeof values[5] === "number" ? values[5] : 1;
+        if (strength._state) strength._state.value = strength.value;
+      }
+    }
+    return result;
+  };
+}
+
+function switchRestartToAuto(shot) {
+  const startWidget = shot?.widgets?.find((widget) => widget?.name === "start");
+  if (startWidget && startWidget.value === START_RESTART) {
+    startWidget.value = "自动续接";
+    if (startWidget._state) startWidget._state.value = startWidget.value;
+    shot.setDirtyCanvas?.(true, true);
+  }
+}
+
+function showStandaloneProgress(info) {
+  if (!info) return;
+  const owner = info.node == null ? null : app.graph?.getNodeById?.(info.node);
+  if (owner?.type !== SHOT_NODE) return;  // another workflow tab is open
+  setShotProgress(info);
+  if (info.shot_done || info.stale) {
+    console.info(info.shot_done ? "[Easy H3 RH] 分镜提示词：全片已跑完" : "[Easy H3 RH] 分镜提示词：这一块已记录过");
+    return;
+  }
+  switchRestartToAuto(owner);
+  console.info(`[Easy H3 RH] 分镜 ${info.block} 完成，排队下一块 ${info.shot_next}`);
+  setTimeout(() => app.queuePrompt(0, 1), 0);
 }
 
 app.registerExtension({
@@ -615,11 +813,15 @@ app.registerExtension({
   // RH change --end--
   setup() {
     installDropTarget();
+    api.addEventListener("feihou_rh_shot_progress", (event) => showStandaloneProgress(event?.detail));
     api.addEventListener("executed", (event) => {
       const output = event?.detail?.output || {};
-      if (output.feihou_rh_shot?.[0]) showShot(output.feihou_shot[0]);
+      if (output.feihou_rh_shot?.[0]) showShot(output.feihou_rh_shot[0]);
       const info = output.feihou_rh_motion?.[0];
       setShotProgress(info);
+      if (info?.segment_video) {
+        showSegmentVideo(app.graph?.getNodeById?.(event?.detail?.display_node ?? event?.detail?.node), info.segment_video);
+      }
       if (!info?.next) return;
       // The next block is queued from this same graph: switch a "从头开始" batch to
       // 自动续接, otherwise it would restart at block 1 forever. 手动设置 stays as
@@ -640,6 +842,10 @@ app.registerExtension({
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name === SEGMENT_NODE) {
       installSegmentLayout(nodeType);
+      return;
+    }
+    if (nodeData?.name === "FeiHouEasyH3RHMotionCollect") {
+      installCollectLayout(nodeType);
       return;
     }
     if (nodeData?.name !== SHOT_NODE) return;
