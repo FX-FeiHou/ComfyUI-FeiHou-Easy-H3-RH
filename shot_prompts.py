@@ -101,8 +101,11 @@ SEG_ALIASES = {"不分段": SEG_WHOLE, "整段": SEG_WHOLE, "关闭": SEG_WHOLE,
 # Same ranges as Motion Segment's option lists; values left out use its recommended ones.
 SEG_SPECS = {
     SEG_CHAIN: {"frames": (39, 497), "overlaps": ("22", "39", "5"), "default": (124, "22")},
-    SEG_CONTEXT: {"frames": (124, 362), "overlaps": ("34", "68", "102"), "default": (345, "68")},
+    SEG_CONTEXT: {"frames": (124, 362), "overlaps": ("22", "39", "56", "73", "90", "107"), "default": (345, "73")},
 }
+# Context-window overlaps are 5 + 17k frames; older mds wrote 34 / 68 / 102 for 39 / 73 / 107
+# (same table as h3_context_windows.LEGACY_OVERLAPS).
+LEGACY_CONTEXT_OVERLAPS = {"34": "39", "68": "73", "102": "107"}
 CONTEXT_SEGMENT_SECONDS = (20, 30, 45, 60)
 CONTEXT_SEGMENT_WHOLE = "整块一次"
 
@@ -287,7 +290,7 @@ SEG_FIELD_NAMES = {
     "每段": "segment", "每段上限": "segment", "segment": "segment",
 }
 SEG_FIELDS = {SEG_CHAIN: ("length", "overlap"), SEG_CONTEXT: ("window", "overlap", "segment")}
-SEG_USAGE = "例如 @分段 上下文窗口 窗口=192 重叠=34 每段=30秒、@分段 帧窗口 段长=124 重叠=22 或 @分段 不分段"
+SEG_USAGE = "例如 @分段 上下文窗口 窗口=192 重叠=39 每段=30秒、@分段 帧窗口 段长=124 重叠=22 或 @分段 不分段"
 
 
 def _seg_number(text: str, unit: str) -> str:
@@ -295,7 +298,7 @@ def _seg_number(text: str, unit: str) -> str:
 
 
 def _segmentation_value(value: str, where: str) -> dict:
-    """@分段 上下文窗口 窗口=192 重叠=34 每段=30秒 → {"mode", "segment_frames", "overlap_frames", "context_segment"}.
+    """@分段 上下文窗口 窗口=192 重叠=39 每段=30秒 → {"mode", "segment_frames", "overlap_frames", "context_segment"}.
 
     Fields left out take Motion Segment's recommended values.  Bare numbers in
     the field order (窗口 重叠 每段 / 段长 重叠) are still read.
@@ -340,6 +343,8 @@ def _segmentation_value(value: str, where: str) -> dict:
     low, high = spec["frames"]
     if not low <= frames <= high or (frames - 5) % 17:
         raise ValueError(f"{where}：@分段 {mode} 的帧数要是 5+17N、在 {low}–{high} 之间（如 124、192、345），实际是 {frames}")
+    if mode == SEG_CONTEXT:
+        overlap = LEGACY_CONTEXT_OVERLAPS.get(overlap, overlap)  # 34 / 68 / 102 from older mds
     if overlap not in spec["overlaps"]:
         raise ValueError(f"{where}：@分段 {mode} 的重叠只能是 {' / '.join(spec['overlaps'])} 帧，实际是 {overlap}")
     result = {"mode": mode, "segment_frames": str(frames), "overlap_frames": overlap}

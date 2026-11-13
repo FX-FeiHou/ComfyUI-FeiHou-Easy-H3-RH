@@ -501,8 +501,10 @@ const SEGMENT_MODES = {
   [SEG_AUTO]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
   [SEG_WHOLE]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
   [SEG_CHAIN]: { frames: [39, 497], overlap: ["22", "39", "5"], segment_frames: 124, overlap_frames: "22" },
-  [SEG_CONTEXT]: { frames: [124, 362], overlap: ["34", "68", "102"], segment_frames: 345, overlap_frames: "68" },
+  [SEG_CONTEXT]: { frames: [124, 362], overlap: ["22", "39", "56", "73", "90", "107"], segment_frames: 345, overlap_frames: "73" },
 };
+// Window overlaps are 5 + 17k frames; saves from before 2026-11-13 wrote 34 / 68 / 102 for 39 / 73 / 107.
+const LEGACY_CONTEXT_OVERLAPS = { "34": "39", "68": "73", "102": "107" };
 
 const frameCount = (value) => Number(String(value).split(" ")[0]);
 
@@ -540,7 +542,11 @@ function modeOptions(widget, name, mode) {
 function matchOption(options, name, value) {
   if (value === null || value === undefined) return undefined;
   if (options.includes(value)) return value;
-  if (name === "overlap_frames") return options.find((option) => String(option) === String(value));
+  if (name === "overlap_frames") {
+    const legacy = LEGACY_CONTEXT_OVERLAPS[String(value)];
+    return options.find((option) => String(option) === String(value))
+      ?? (legacy === undefined ? undefined : options.find((option) => String(option) === legacy));
+  }
   const frames = frameCount(value);
   if (!Number.isFinite(frames)) return undefined;
   const grid = Math.max(5, frames) - ((Math.max(5, frames) - 5) % 17);
@@ -654,7 +660,7 @@ function migrateSegmentValues(node, values) {
   if (hasContext) {
     memory[SEG_CONTEXT] = {
       segment_frames: values.context_window_frames ?? "345",
-      overlap_frames: values.context_overlap_frames ?? "68",
+      overlap_frames: LEGACY_CONTEXT_OVERLAPS[String(values.context_overlap_frames)] ?? values.context_overlap_frames ?? "73",
     };
   }
   migrated.segmentation = mode;
@@ -667,6 +673,8 @@ function migrateSegmentValues(node, values) {
 
 function setSegmentWidget(node, name, value) {
   if (value === null || value === undefined) return;
+  // 34 / 68 / 102 were only ever window overlaps: the real 39 / 73 / 107.
+  if (name === "overlap_frames" && LEGACY_CONTEXT_OVERLAPS[String(value)]) value = LEGACY_CONTEXT_OVERLAPS[String(value)];
   const widget = segmentWidget(node, name);
   if (!widget) return;
   // A value from another layout never lands on the wrong kind of field: a
@@ -679,11 +687,27 @@ function setSegmentWidget(node, name, value) {
   setWidgetValue(widget, value);
 }
 
+// Choices a save from before them could not hold: 上下文每段上限 came after
+// frame_window / context_window_frames, so positional loading of such a save
+// put another field's value there (e.g. the overlap "22") and the run failed
+// validation.  Its saved name list has no entry for it either.
+const SEGMENT_CHOICE_DEFAULTS = { context_segment: "30 秒" };
+
+function repairSegmentChoices(node) {
+  for (const [name, fallback] of Object.entries(SEGMENT_CHOICE_DEFAULTS)) {
+    const widget = segmentWidget(node, name);
+    const options = widget?.options?.values;
+    if (!widget || !Array.isArray(options) || !options.length || options.includes(widget.value)) continue;
+    setWidgetValue(widget, options.includes(fallback) ? fallback : options[0]);
+  }
+}
+
 function applySegmentValues(node, values) {
   const migrated = migrateSegmentValues(node, values);
   // segmentation first: the shared fields are then checked against its options.
   setSegmentWidget(node, "segmentation", migrated.segmentation);
   Object.entries(migrated).forEach(([name, value]) => { if (name !== "segmentation") setSegmentWidget(node, name, value); });
+  repairSegmentChoices(node);
   syncSegmentMode(node);
 }
 
@@ -720,10 +744,13 @@ function installSegmentLayout(nodeType) {
     this.properties.feihou_segment_layout = SEGMENT_LAYOUT;
     watchSegmentation(this);
     const restore = segmentRestorer(this, info);
-    if (restore) restore();
-    else syncSegmentMode(this);
+    const settle = () => {
+      if (restore) restore();
+      else { repairSegmentChoices(this); syncSegmentMode(this); }
+    };
+    settle();
     // Some frontends re-apply widgets_values by position after onConfigure.
-    setTimeout(() => { if (restore) restore(); else syncSegmentMode(this); }, 0);
+    setTimeout(settle, 0);
     return result;
   };
   const serialized = nodeType.prototype.onSerialize;

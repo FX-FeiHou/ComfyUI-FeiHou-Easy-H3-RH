@@ -78,36 +78,60 @@ class Window:
         return self.audio_start + self.audio_len
 
 
-def plan_windows(total_frames: int, window_frames: int, overlap_frames: int) -> list[Window]:
-    """Evenly spaced, group-aligned windows covering a 5 + 17N clip.
+# Older saves wrote the window overlap as 34 / 68 / 102; the overlap of two
+# group-aligned windows is always 5 + 17k frames, so those meant 39 / 73 / 107.
+LEGACY_OVERLAPS = {"34": "39", "68": "73", "102": "107"}
+# The last window of a clip is at least this long (frames, 5 + 17k): about 2 s.
+MIN_LAST_WINDOW_FRAMES = 56
 
-    ``window_frames`` / ``overlap_frames`` are rounded down to whole 17-frame
-    groups (window at least 2 groups, overlap at least 1 and less than the
-    window).  The first window starts at frame 0 and the last ends at the
-    clip's last frame; starts in between are spread evenly, so every overlap is
-    at least ``overlap_frames``.  A clip no longer than one window is one
-    window.
+
+def overlap_groups_of(overlap_frames) -> int:
+    """17-frame groups ``k`` of an overlap of 5 + 17k frames (22 → 1, 39 → 2, 56 → 3);
+    the old 34 / 68 / 102 give 2 / 4 / 6, the same as 39 / 73 / 107."""
+    return max(1, math.ceil((int(overlap_frames) - 5) / GROUP_FRAMES))
+
+
+def plan_windows(total_frames: int, window_frames: int, overlap_frames: int) -> list[Window]:
+    """Group-aligned windows covering a 5 + 17N clip, laid out from frame 0.
+
+    Every window is ``window_frames`` long (rounded down to 5 + 17M) and starts
+    ``overlap_frames`` (5 + 17k) before the previous one ends, so neighbours
+    overlap by exactly that much.  The last window only runs to the clip's end
+    (the clip is already padded to 5 + 17N and trimmed afterwards); when that
+    would leave it shorter than ``MIN_LAST_WINDOW_FRAMES`` it starts earlier,
+    overlapping more.  A clip no longer than one window is one window.
     """
     total_groups = groups_of(total_frames)
     window_groups = max(2, (max(5, int(window_frames)) - 5) // GROUP_FRAMES)
-    overlap_groups = max(1, int(overlap_frames) // GROUP_FRAMES)
+    overlap_groups = overlap_groups_of(overlap_frames)
     if overlap_groups >= window_groups:
         raise ValueError(f"H3 上下文窗口：重叠 {overlap_frames} 帧必须小于窗口 {window_frames} 帧（按 17 帧取整后）。")
     full_audio = audio_tokens(total_frames)
     if total_groups <= window_groups:
         return [Window(0, int(total_frames), 0, video_tokens(total_frames), 0, full_audio)]
     stride = window_groups - overlap_groups
-    count = 1 + math.ceil((total_groups - window_groups) / stride)
-    span = total_groups - window_groups
-    starts = [round(index * span / (count - 1)) for index in range(count)]
-    frames = frames_of(window_groups)
-    length_v, length_a = video_tokens(frames), audio_tokens(frames)
-    windows = []
-    for group in starts:
-        frame_start = GROUP_FRAMES * group
-        audio_start = min(round(frame_start * AUDIO_PER_FRAME), full_audio - length_a)
-        windows.append(Window(frame_start, frames, GROUP_TOKENS * group, length_v, audio_start, length_a))
-    return windows
+    shortest_last = max(groups_of(MIN_LAST_WINDOW_FRAMES), overlap_groups + 1)
+    spans = []
+    start = 0
+    while start + window_groups < total_groups:
+        spans.append((start, window_groups))
+        start += stride
+    if total_groups - start < shortest_last:
+        start = total_groups - shortest_last
+        if spans:
+            start = max(start, spans[-1][0] + 1)
+    spans.append((start, total_groups - start))
+    return [_window(GROUP_FRAMES * group, frames_of(groups), int(total_frames)) for group, groups in spans]
+
+
+def _audio_start(frame_start: int, frames: int, total_frames: int) -> int:
+    """First audio token of a window.  A window that ends on the clip's last
+    frame takes the clip's last audio tokens: rounding its start down could
+    otherwise leave the final token(s) of the clip in no window."""
+    full_audio, length_a = audio_tokens(total_frames), audio_tokens(frames)
+    if int(frame_start) + int(frames) >= int(total_frames):
+        return full_audio - length_a
+    return min(round(frame_start * AUDIO_PER_FRAME), full_audio - length_a)
 
 
 # Lips move a little before and after the sound of a line.
@@ -117,10 +141,8 @@ SPEECH_MIN_WINDOW_GROUPS = 7
 
 
 def _window(frame_start: int, frames: int, total_frames: int) -> Window:
-    full_audio, length_a = audio_tokens(total_frames), audio_tokens(frames)
-    audio_start = min(round(frame_start * AUDIO_PER_FRAME), full_audio - length_a)
     return Window(frame_start, frames, GROUP_TOKENS * (frame_start // GROUP_FRAMES), video_tokens(frames),
-                  audio_start, length_a)
+                  _audio_start(frame_start, frames, total_frames), audio_tokens(frames))
 
 
 def plan_speech_windows(total_frames: int, window_frames: int, overlap_frames: int,
@@ -144,7 +166,7 @@ def plan_speech_windows(total_frames: int, window_frames: int, overlap_frames: i
     total = int(total_frames)
     total_groups = groups_of(total)
     longest = groups_of(plain[0].frames)
-    overlap_groups = max(1, int(overlap_frames) // GROUP_FRAMES)
+    overlap_groups = overlap_groups_of(overlap_frames)
     shortest = min(longest, max(SPEECH_MIN_WINDOW_GROUPS, overlap_groups + 1))
     talking = torch.zeros(total, dtype=torch.bool)
     for start, end in speech:

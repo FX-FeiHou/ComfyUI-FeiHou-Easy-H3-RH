@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.4.19
+
+- Context windows are now laid out from the start on the set overlap, instead of spread evenly at full length. Every window is the set length, the next one starts the overlap before it ends, and the last one only runs to the block's end. If that would leave the last window shorter than about 2 s (56 frames), it starts earlier instead. A 15 s dance (362 frames) with 260-frame windows and overlap 39 now samples 0–260 and 221–362, 401 frames in total. Before, it sampled 0–260 and 102–362: 520 frames with a 158-frame overlap. Talk blocks keep their pause-aligned windows.
+- The window overlap options are now the real overlaps, 22 / 39 / 56 / 73 (default) / 90 / 107 frames. Two windows on the 17-frame grid always overlap by 5 + 17k frames, so the old 34 / 68 / 102 really meant 39 / 73 / 107. Old workflows and mds that write 34 / 68 / 102 still work and use 39 / 73 / 107.
+- Context windows: fixed "有时间位置没有被任何窗口覆盖" for some block lengths, e.g. a 17.9 s talk block. The last window's audio start was rounded down, so the clip's last audio frame lay in no window.
+- Motion Segment: workflows saved before 上下文每段上限 (`context_segment`) existed open with that field set to 30 秒. Before, loading put another field's value there (e.g. the overlap "22"), and the run stopped with a validation error.
+
 ## v1.4.18
 
 - Context windows now work for talk blocks (`@video none`) whose dialogue lines are time-tagged, e.g. `[00:09.00-00:12.60] <Subject 1> (S1) 看着镜头说：<d>…</d>`. Each window speaks only the lines it holds at least half of, so a sentence is never started by two windows. The windows are placed so their overlaps fall in the pauses between lines: a window may be shorter than the set length (down to about 5 s), and speech in the middle of an overlap counts most. The log reports any speech frames left in an overlap. When a window's first line starts more than 0.5 s into the window, or its last line ends more than 0.5 s before the end, the prompt gets a short note to keep the mouth closed there (Chinese or English, following the line). A talk block without time tags keeps the sequential frame-window segments. Untagged lines still go to every window, so camera moves meant to happen once should be tagged too.

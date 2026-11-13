@@ -124,10 +124,12 @@ SEGMENT_FRAME_DEFAULT = _window_label(124)
 def _window_frames(value) -> int:
     """Frames of a window option ("362 帧 · 15.08 秒"; a bare number also works)."""
     return int(str(value).split()[0])
-CONTEXT_OVERLAP_CHOICES = ["34", "68", "102"]
-CONTEXT_OVERLAP_DEFAULT = "68"
+# The overlap of two windows on the 17-frame grid is 5 + 17k frames; saves from
+# before 2026-11-13 wrote 34 / 68 / 102 for 39 / 73 / 107 (context_windows.LEGACY_OVERLAPS).
+CONTEXT_OVERLAP_CHOICES = ["22", "39", "56", "73", "90", "107"]
+CONTEXT_OVERLAP_DEFAULT = "73"
 # overlap_frames serves both: tail overlap (帧窗口 / 不分段) or window overlap (上下文窗口).
-SEGMENT_OVERLAP_CHOICES = [*OVERLAP_CHOICES, *CONTEXT_OVERLAP_CHOICES]
+SEGMENT_OVERLAP_CHOICES = [*OVERLAP_CHOICES, *(c for c in CONTEXT_OVERLAP_CHOICES if c not in OVERLAP_CHOICES)]
 # A context-window block continued with @continue (or the fixed-length
 # fallback) still anchors on the previous tail with this many frames.
 CONTEXT_CHAIN_OVERLAP = 22
@@ -1008,7 +1010,7 @@ class FeiHouEasyH3MotionSegment:
                 "segmentation": (SEGMENTATION_CHOICES, {"default": SEGMENTATION_AUTO,
                     "tooltip": "分段方式，下面的 segment_frames / overlap_frames 跟着它换选项（每种方式各记各的值）。"
                                "自动：完全按分镜 md——每块的 @分段（或 md 开头写的 @分段，对所有块生效）决定，"
-                               "例如 @分段 上下文窗口 窗口=192 重叠=34 每段=30秒、@分段 帧窗口 段长=124 重叠=22、@分段 不分段（没写的参数用推荐值）；md 没写就按不分段。自动和不分段时下面三项变灰、不起作用。"
+                               "例如 @分段 上下文窗口 窗口=192 重叠=39 每段=30秒、@分段 帧窗口 段长=124 重叠=22、@分段 不分段（没写的参数用推荐值）；md 没写就按不分段。自动和不分段时下面三项变灰、不起作用。"
                                "不分段：没写 @split 的块整块一次采样（不限时长，视频长时很吃显存），写了 @split 的按切点分段；没接分镜提示词时参考视频 1 整段一次采。"
                                "帧窗口：块内按 @split 或 segment_frames 分段逐段采样，后一段锁定上一段解码出的尾部 overlap_frames 帧接上，段数越多细节越掉、噪点越多。"
                                "上下文窗口：整块一次采样，每一步把整块 latent 切成 segment_frames 长、至少重叠 overlap_frames 帧的窗口分别预测、在重叠处线性混合，"
@@ -1021,7 +1023,8 @@ class FeiHouEasyH3MotionSegment:
                                "接「分镜提示词」时只作用于没写 @split 的块。"}),
                 "overlap_frames": (SEGMENT_OVERLAP_CHOICES, {"default": "22",
                     "tooltip": "重叠帧数。帧窗口 / 不分段：上一段结尾这么多帧的 latent 被锁定作为下一段开头（@split 段和 @continue 块），可选 22 / 39 / 5，22 帧 = 7 个视频 token；"
-                               "上下文窗口：相邻窗口至少重叠的帧数，可选 34 / 68（默认）/ 102，越大接缝越稳；窗口起点均匀分布，实际重叠往往更大。"}),
+                               "上下文窗口：相邻窗口重叠的帧数，可选 22 / 39 / 56 / 73（默认）/ 90 / 107，越大接缝越稳、越慢。窗口从开头按这个重叠依次往后排，"
+                               "最后一个窗口只跑到块尾（至少约 2 秒，不够时往前多重叠一些）。"}),
                 "context_segment": (CONTEXT_SEGMENT_CHOICES, {"default": CONTEXT_SEGMENT_DEFAULT,
                     "tooltip": "上下文窗口每段上限（只在上下文窗口时用）。比它长的块按这个长度分段，每次运行采一段、存一段，跑完一段就能看效果，"
                                "中途停了前面的不白跑；后一段开头重叠 overlap_frames 帧，锁定上一段的结尾画面接着生成，重叠处渐变混合。"
@@ -1053,7 +1056,7 @@ class FeiHouEasyH3MotionSegment:
         if mode == SEGMENTATION_CONTEXT:
             if _window_label(frames) not in CONTEXT_WINDOW_CHOICES:
                 return f"上下文窗口的 segment_frames 必须是 5+17N 且在 124～362 帧之间：{segment_frames!r}"
-            if str(overlap_frames) not in CONTEXT_OVERLAP_CHOICES:
+            if context_windows.LEGACY_OVERLAPS.get(str(overlap_frames), str(overlap_frames)) not in CONTEXT_OVERLAP_CHOICES:
                 return f"上下文窗口的 overlap_frames 必须是 {' / '.join(CONTEXT_OVERLAP_CHOICES)}：{overlap_frames!r}"
             return True
         if not SEGMENT_FRAME_RANGE[0] <= frames <= SEGMENT_FRAME_RANGE[1]:
@@ -1163,6 +1166,7 @@ class FeiHouEasyH3MotionSegment:
         length = _grid_frames(_window_frames(segment_frames))
         context = None
         if mode == SEGMENTATION_CONTEXT:
+            overlap_frames = context_windows.LEGACY_OVERLAPS.get(str(overlap_frames), str(overlap_frames))
             context = (length, int(overlap_frames))
             # The window overlap is not a tail overlap: @continue blocks and
             # the fixed-length fallback anchor on CONTEXT_CHAIN_OVERLAP frames.
