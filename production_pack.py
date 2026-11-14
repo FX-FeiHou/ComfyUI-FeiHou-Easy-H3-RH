@@ -10,6 +10,7 @@ import ipaddress
 import json
 import math
 import os
+import posixpath
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -267,6 +268,41 @@ def inventory(root):
     return sorted(files)
 
 
+_PROJECT_DATA = re.compile(r'<script\b[^>]*\bid\s*=\s*["\']dh-project-data["\'][^>]*>(.*?)</script\s*>', re.I | re.S)
+
+
+def asset_file_map(html, html_file, files):
+    """Map asset IDs (P1, P2 ...) to package images declared in the page's inline project data.
+
+    Only the JSON data block is parsed; no page script runs. User images keep their own
+    names (for example ../人物.jpg) and still resolve as P1. Files named after the ID win.
+    """
+    match = _PROJECT_DATA.search(html)
+    if not match:
+        return {}
+    try:
+        project = json.loads(match.group(1))
+    except ValueError:
+        return {}
+    by_name = {f.casefold(): f for f in files if Path(f).suffix.lower() in IMAGE_EXT}
+    base = PurePosixPath(html_file).parent.as_posix()
+    mapping = {}
+    assets = project.get("assets") if isinstance(project, dict) else None
+    for asset in assets if isinstance(assets, list) else []:
+        if not isinstance(asset, dict):
+            continue
+        ident, name = str(asset.get("id", "")).strip(), str(asset.get("file", "")).strip().replace("\\", "/")
+        if not ident or not name or name.startswith("data:") or re.match(r"^[a-z][a-z0-9+.-]*:", name, re.I):
+            continue
+        rel = posixpath.normpath(posixpath.join(base, name)) if base not in ("", ".") else posixpath.normpath(name)
+        if rel == ".." or rel.startswith("../") or rel.startswith("/"):
+            continue
+        found = by_name.get(rel.casefold())
+        if found:
+            mapping[ident.casefold()] = found
+    return mapping
+
+
 PAGE_META = re.compile(
     r"""<meta\b[^>]*\bname\s*=\s*["']feihou-pack-page["'][^>]*>""", re.IGNORECASE)
 PAGE_CONTENT = re.compile(r"""\bcontent\s*=\s*["']\s*([A-Za-z_-]+)\s*["']""", re.IGNORECASE)
@@ -330,7 +366,8 @@ def inspect_pack(source, shotlist_file=""):
     html = page.read_text(encoding="utf-8-sig")
     package_id = uuid.uuid4().hex
     data = {"source": source, "root": str(root), "html_file": selected,
-            "html_sha256": hashlib.sha256(html.encode()).hexdigest(), "files": files}
+            "html_sha256": hashlib.sha256(html.encode()).hexdigest(), "files": files,
+            "asset_files": asset_file_map(html, selected, files)}
     atomic_json(cache_root() / f"{package_id}.json", data)
     return {"package_id": package_id, "html": html, "html_file": selected,
             "audio_files": [f for f in files if Path(f).suffix.lower() in AUDIO_EXT]}
@@ -484,11 +521,18 @@ def validate_shots(data, shots, audio_file=""):
         refs = raw.get("refs", [])
         if not isinstance(refs, list) or not 1 <= len(refs) <= 9:
             raise ValueError(f"{shot_id}: expected 1–9 ordered image references, got {len(refs)}")
+        declared_files = data.get("asset_files", {})
         images = []
         for ref in refs:
-            matches = assets.get(str(ref).strip().casefold(), [])
+            key = str(ref).strip().casefold()
+            matches = assets.get(key, [])
+            if not matches and key in declared_files:
+                matches = [declared_files[key]]
+            if not matches:
+                raise ValueError(f"{shot_id}: asset {ref} has no image. Name its image {ref}.png (or .jpg/.webp) "
+                                 f"inside the package, or set its file in the asset page. 资产 {ref} 缺少图片")
             if len(matches) != 1:
-                raise ValueError(f"{shot_id}: asset {ref} is missing or ambiguous: {matches}")
+                raise ValueError(f"{shot_id}: asset {ref} is ambiguous; keep only one image named {ref}: {matches}")
             if not contained(data["root"], matches[0]).is_file():
                 raise ValueError(f"{shot_id}: missing image: {matches[0]}")
             images.append(matches[0])

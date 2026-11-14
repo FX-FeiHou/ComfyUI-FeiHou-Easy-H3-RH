@@ -8,11 +8,72 @@ const SHOT_NODE = "FeiHouEasyH3RHShotPrompts";
 const MARKDOWN_PATTERN = /\.(md|markdown|txt)$/i;
 const DROP_LABEL = "选择 md 文件";
 const REFRESH_LABEL = "刷新提示词";
-const START_RESTART = "从头开始";
+const START_SEQUENCE = "顺序生成";
 const START_MANUAL = "手动设置";
+// Saved before 顺序生成 (both became it).
+const LEGACY_STARTS = { "自动续接": START_SEQUENCE, "从头开始": START_SEQUENCE };
 
 function setups() {
   return (app.graph?._nodes || []).filter((node) => node.type === "FeiHouEasyH3RHSetup");
+}
+
+// @aspect of a shot md (header, else the first block that writes one): the same
+// spellings the backend reads (9:16, 9x16, 9比16; aspect / aspect_ratio / 画幅 / 画幅比例 / 比例).
+const MD_ASPECTS = ["1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"];
+const MD_ASPECT_LINE = /^\s*@(?:aspect_ratio|aspect|画幅比例|画幅|比例)(?:\s+|\s*[:：=]\s*)(.+?)\s*$/i;
+
+function mdAspect(text) {
+  let header = "";
+  let first = "";
+  let inBlock = false;
+  for (const line of String(text || "").split(/\r?\n/)) {
+    if (/^\s*=+\s*FEIHOU_SHOT\s+\d+\s*=+\s*$/i.test(line)) {
+      inBlock = true;
+      continue;
+    }
+    const match = line.match(MD_ASPECT_LINE);
+    if (!match) continue;
+    const value = match[1].replace(/\s+/g, "").replace(/[：xX比]/g, ":");
+    if (!MD_ASPECTS.includes(value)) continue;
+    if (!inBlock && !header) header = value;
+    if (inBlock && !first) first = value;
+  }
+  return header || first;
+}
+
+// Put the md's aspect ratio on Setup's 画幅比例, so the node shows what the run
+// will use (the backend applies @aspect anyway).  Returns the value it set.
+function showSetupAspect(aspect, { quiet = false } = {}) {
+  if (!MD_ASPECTS.includes(aspect)) return "";
+  let changed = "";
+  for (const setup of setups()) {
+    const widget = setup.widgets?.find((item) => item?.name === "aspect_ratio");
+    if (!widget || widget.value === aspect) continue;
+    const options = widget.options?.values;
+    if (Array.isArray(options) && !options.includes(aspect)) continue;
+    const before = widget.value;
+    widget.value = aspect;
+    if (widget._state) widget._state.value = aspect;
+    try {
+      widget.callback?.(aspect, app.canvas, setup);
+    } catch (error) {
+      console.warn("[Easy H3] 更新 Setup 画幅比例时出错：", error);
+    }
+    setup.setDirtyCanvas?.(true, true);
+    changed = aspect;
+    console.info(`[Easy H3] Setup 画幅比例按分镜 md 的 @aspect 从 ${before} 改成 ${aspect}`);
+  }
+  if (changed && !quiet) notify("info", `Setup 的画幅比例已按 md 的 @aspect 改成 ${changed}`);
+  return changed;
+}
+
+// The 分镜提示词 node a run belongs to.  A graph may keep a second, bypassed
+// copy (another md): only the node that ran, else the first active one, counts.
+function activeShotNode(nodeId) {
+  const owner = nodeId == null ? null : app.graph?.getNodeById?.(nodeId);
+  if (owner?.type === SHOT_NODE) return owner;
+  const shots = (app.graph?._nodes || []).filter((node) => node?.type === SHOT_NODE);
+  return shots.find((node) => !node.mode) || shots[0] || null;
 }
 
 function promptWidget(node) {
@@ -137,6 +198,7 @@ function applyMarkdown(node, text, name, { handle = null } = {}) {
     void saveHandle(node, handle);
   }
   setButtonLabel(node, name);
+  showSetupAspect(mdAspect(text));
   console.info(`[Easy H3 RH] 已载入分镜 md：${name}（${text.length} 字符）`);
   return true;
 }
@@ -170,6 +232,7 @@ async function refreshMarkdown(node) {
     return;
   }
   setButtonLabel(node, name);
+  showSetupAspect(mdAspect(text));
   if (promptWidget(node)?.value === text) {
     notify("info", `${name} 没有变化。`);
     return;
@@ -300,10 +363,35 @@ function firstShotNumber(value) {
   return match ? Number(match[0]) : 0;
 }
 
-function shotNumberLabel(value, total) {
+// 顺序生成's 自动 mode: 镜号 0 (or 0@N while the film's next run is queued).
+function isAutoShotNumber(value) {
   const text = String(value ?? "").trim();
-  if (text === "" || /^0+$/.test(text)) return "0（全片）";
-  return /^\d+$/.test(text) && total ? `${Number(text)} / ${total}` : text;
+  return text === "" || /^0+$/.test(text) || /^0@\d+$/.test(text);
+}
+
+function shotNumberLabel(value, total, node) {
+  const text = String(value ?? "").trim();
+  const manual = startValue(node) === START_MANUAL;
+  if (isAutoShotNumber(text)) {
+    if (manual) return "0（全片）";
+    const running = node?.__h3AutoBlock || Number(text.split("@")[1] || 0);
+    return running && total ? `${running}/${total}（自动）` : "0（自动）";
+  }
+  return /^\d+$/.test(text) && total ? `${Number(text)}/${total}` : text;
+}
+
+function startValue(node) {
+  const value = node?.widgets?.find((widget) => widget?.name === "start")?.value;
+  return LEGACY_STARTS[value] || value;
+}
+
+// Older workflows: 自动续接 / 从头开始 become 顺序生成.
+function migrateStart(node) {
+  const widget = node?.widgets?.find((item) => item?.name === "start");
+  if (widget && LEGACY_STARTS[widget.value]) {
+    widget.value = LEGACY_STARTS[widget.value];
+    if (widget._state) widget._state.value = widget.value;
+  }
 }
 
 function setShotNumber(node, widget, value) {
@@ -319,7 +407,8 @@ function stepShotNumber(node, widget, number) {
 }
 
 function promptShotNumber(node, widget, event) {
-  app.canvas.prompt("镜号（0 = 全片；手动设置可填 6,9 或 3-5）", widget.value, (input) => {
+  app.canvas.prompt("镜号（顺序生成：1 = 全片重跑，其他块号 = 从那块开始，0 = 自动每次从头；手动设置可填 6,9 或 3-5）",
+    isAutoShotNumber(widget.value) ? "0" : widget.value, (input) => {
     const text = String(input ?? "").trim();
     if (!/^[\d\s,，;；~-]*$/.test(text)) {
       notify("warn", `镜号只能填数字、6,9 或 3-5，收到「${text}」`);
@@ -366,7 +455,7 @@ function installShotNumberWidget(node) {
       ctx.fillText("镜号", margin + SHOT_ARROW_ZONE + 4, middle);
       ctx.fillStyle = LiteGraph.WIDGET_TEXT_COLOR;
       ctx.textAlign = "right";
-      ctx.fillText(shotNumberLabel(this.value, shotBlockCount(owner)), width - margin - SHOT_ARROW_ZONE - 4, middle);
+      ctx.fillText(shotNumberLabel(this.value, shotBlockCount(owner), owner), width - margin - SHOT_ARROW_ZONE - 4, middle);
       ctx.restore();
     },
     mouse(event, pos, owner) {
@@ -433,6 +522,8 @@ function showShot(info) {
       targets[0].setDirtyCanvas?.(true, true);
     }
   }
+  // The block's @aspect (the backend already used it for this run).
+  if (info.aspect) showSetupAspect(String(info.aspect), { quiet: true });
   // The 镜号 widget is NOT advanced here: this node runs at the start of every
   // segment, so the block is not finished yet (see setShotProgress).
   const range = info.range ? `（${info.range}）` : "";
@@ -442,22 +533,33 @@ function showShot(info) {
 // 镜号 = the block the next run starts from. Motion Collect reports it once a
 // block is really finished; 0 after the last block makes the next click start
 // the film over.
-function setShotProgress(info) {
+function setShotProgress(info, nodeId) {
   if (!info || !Number.isFinite(Number(info.block))) return;
-  const shotNode = (app.graph?._nodes || []).find((node) => node?.type === SHOT_NODE);
+  const shotNode = activeShotNode(nodeId);
   const numberWidget = shotNode?.widgets?.find((widget) => widget?.name === "shot_numbers");
   if (!numberWidget) return;
   // 手动设置: 镜号 is the user's pick list, not a progress display. The server
   // state remembers which pick runs next, so the list stays as typed.
   const startWidget = shotNode.widgets.find((widget) => widget?.name === "start");
   if (startWidget?.value === START_MANUAL) return;
+  if (isAutoShotNumber(numberWidget.value)) {
+    // 自动: 镜号 stays 0 (the next run the user queues starts over); only the display follows.
+    shotNode.__h3AutoBlock = info.shot_done ? null
+      : Math.round(Number("shot_done" in info ? info.shot_next : info.block)) || null;
+    if (numberWidget.value !== "0") {
+      numberWidget.value = "0";
+      if (numberWidget._state) numberWidget._state.value = "0";
+    }
+    shotNode.setDirtyCanvas?.(true, true);
+    return;
+  }
   let next;
   if (!("shot_done" in info)) {
     // A segment inside the block finished: the next run continues this block,
     // so 镜号 must name it (a stale value would jump elsewhere).
     next = String(Math.round(Number(info.block)));
   } else if (info.shot_done) {
-    next = "0";  // the film is finished: back to 全片
+    next = "1";  // the film is finished: the next run makes it again from block 1
   } else {
     next = Number.isFinite(Number(info.shot_next)) && Number(info.shot_next) > 0
       ? String(Math.round(Number(info.shot_next))) : numberWidget.value;
@@ -597,8 +699,9 @@ function applySegmentMode(node, mode, switching) {
     widget.options.disabled = off;
   }
   // 每段上限 only splits context-window blocks.
-  const segmentCap = segmentWidget(node, "context_segment");
-  if (segmentCap) {
+  for (const name of ["context_segment", "crossfade_frames"]) {
+    const segmentCap = segmentWidget(node, name);
+    if (!segmentCap) continue;
     const off = mode !== SEG_CONTEXT;
     segmentCap.disabled = off;
     segmentCap.options ||= {};
@@ -691,7 +794,7 @@ function setSegmentWidget(node, name, value) {
 // frame_window / context_window_frames, so positional loading of such a save
 // put another field's value there (e.g. the overlap "22") and the run failed
 // validation.  Its saved name list has no entry for it either.
-const SEGMENT_CHOICE_DEFAULTS = { context_segment: "30 秒" };
+const SEGMENT_CHOICE_DEFAULTS = { context_segment: "30 秒", crossfade_frames: "12" };
 
 function repairSegmentChoices(node) {
   for (const [name, fallback] of Object.entries(SEGMENT_CHOICE_DEFAULTS)) {
@@ -802,27 +905,39 @@ function installCollectLayout(nodeType) {
   };
 }
 
-function switchRestartToAuto(shot) {
-  const startWidget = shot?.widgets?.find((widget) => widget?.name === "start");
-  if (startWidget && startWidget.value === START_RESTART) {
-    startWidget.value = "自动续接";
-    if (startWidget._state) startWidget._state.value = startWidget.value;
-    shot.setDirtyCanvas?.(true, true);
+// Queue the film's next run from this graph.  In 自动 mode 镜号 is 0@N for that
+// one run only, so the server continues the film instead of starting it over.
+function queueNextRun(shot, block) {
+  const widget = shot?.widgets?.find((item) => item?.name === "shot_numbers");
+  const auto = widget && isAutoShotNumber(widget.value) && startValue(shot) !== START_MANUAL && block;
+  if (auto) {
+    widget.value = `0@${Math.round(Number(block))}`;
+    if (widget._state) widget._state.value = widget.value;
   }
+  setTimeout(async () => {
+    try {
+      await app.queuePrompt(0, 1);
+    } finally {
+      if (auto) {
+        widget.value = "0";
+        if (widget._state) widget._state.value = "0";
+        shot.setDirtyCanvas?.(true, true);
+      }
+    }
+  }, 0);
 }
 
 function showStandaloneProgress(info) {
   if (!info) return;
   const owner = info.node == null ? null : app.graph?.getNodeById?.(info.node);
   if (owner?.type !== SHOT_NODE) return;  // another workflow tab is open
-  setShotProgress(info);
+  setShotProgress(info, info.node);
   if (info.shot_done || info.stale) {
     console.info(info.shot_done ? "[Easy H3 RH] 分镜提示词：全片已跑完" : "[Easy H3 RH] 分镜提示词：这一块已记录过");
     return;
   }
-  switchRestartToAuto(owner);
   console.info(`[Easy H3 RH] 分镜 ${info.block} 完成，排队下一块 ${info.shot_next}`);
-  setTimeout(() => app.queuePrompt(0, 1), 0);
+  queueNextRun(owner, info.shot_next);
 }
 
 app.registerExtension({
@@ -843,27 +958,22 @@ app.registerExtension({
     api.addEventListener("feihou_rh_shot_progress", (event) => showStandaloneProgress(event?.detail));
     api.addEventListener("executed", (event) => {
       const output = event?.detail?.output || {};
-      if (output.feihou_rh_shot?.[0]) showShot(output.feihou_rh_shot[0]);
+      // Another workflow tab may be open now: only touch the graph the run belongs to.
+      const ownerId = event?.detail?.display_node ?? event?.detail?.node;
+      const owner = app.graph?.getNodeById?.(ownerId);
+      const ownedBy = (type) => owner?.type === type;
+      if (output.feihou_rh_shot?.[0] && ownedBy(SHOT_NODE)) showShot(output.feihou_rh_shot[0]);
       const info = output.feihou_rh_motion?.[0];
-      setShotProgress(info);
-      if (info?.segment_video) {
-        showSegmentVideo(app.graph?.getNodeById?.(event?.detail?.display_node ?? event?.detail?.node), info.segment_video);
-      }
+      const mine = ownedBy("FeiHouEasyH3RHMotionCollect");
+      if (mine) setShotProgress(info);
+      if (info?.segment_video && mine) showSegmentVideo(owner, info.segment_video);
       if (!info?.next) return;
-      // The next block is queued from this same graph: switch a "从头开始" batch to
-      // 自动续接, otherwise it would restart at block 1 forever. 手动设置 stays as
-      // it is: the server resumes the same pick list from its state file.
-      const shot = (app.graph?._nodes || []).find((node) => node?.type === SHOT_NODE);
-      const startWidget = shot?.widgets?.find((widget) => widget?.name === "start");
-      if (startWidget && startWidget.value === START_RESTART) {
-        startWidget.value = "自动续接";
-        if (startWidget._state) startWidget._state.value = startWidget.value;
-        shot.setDirtyCanvas?.(true, true);
-        console.info("[Easy H3] 自动续跑下一块：start 已切到「自动续接」");
-      }
+      if (!mine) return;  // another workflow is open: queueing it would run the wrong graph
+      // The next run is queued from this same graph; 手动设置 resumes its pick list from the state file.
+      const shot = activeShotNode();
       const where = info.blocks ? `第 ${info.block}/${info.blocks} 个分镜，第 ${info.done}/${info.count} 段` : `第 ${info.done}/${info.count} 段`;
       console.info(`[Easy H3] 动作迁移：${where}完成，排队下一段`);
-      setTimeout(() => app.queuePrompt(0, 1), 0);
+      queueNextRun(shot, "shot_done" in info ? info.shot_next : info.block);
     });
   },
   beforeRegisterNodeDef(nodeType, nodeData) {
@@ -886,6 +996,7 @@ app.registerExtension({
     nodeType.prototype.onConfigure = function () {
       const result = configured?.apply(this, arguments);
       installPicker(this);
+      migrateStart(this);
       // The button label is not saved: show the remembered file again.
       const remembered = this.properties?.feihou_md_name;
       if (remembered) setButtonLabel(this, remembered);

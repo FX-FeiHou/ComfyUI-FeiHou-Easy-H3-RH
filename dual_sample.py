@@ -412,6 +412,11 @@ class FeiHouEasyH3DualSample2nd:
         latent = _reconcile(upscaled, template)
 
         refine_model = model if model is not None else plan["model"]
+        if plan.get("remake") and model is not None and plan.get("remake_lora") is not False:
+            # 人物替换: the Remake LoRA picked on H3动作迁移预处理, on the 2nd-pass model too
+            # (False: an older preprocess without the choice, the LoRA list has it).
+            from . import remake as remake_mode
+            refine_model = remake_mode.with_remake_lora(refine_model, plan.get("remake_lora"))
         if plan.get("remake"):
             # Remake 替换 (Motion Segment): keyframes stay dropped below sigma 0.9 on this model too.
             from . import remake as remake_mode

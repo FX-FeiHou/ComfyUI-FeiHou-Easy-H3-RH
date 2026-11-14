@@ -161,7 +161,7 @@ AUTO_RATIOS = ((0.04, 0.0), (0.07, 1.0), (0.10, 2.0), (0.14, 3.0), (0.18, 4.0), 
 FACE_DETECTOR = "face_yolov8m.pt"
 # Frames a missed detection is bridged across (a face that leaves for longer is not blurred).
 MAX_GAP = 12
-_FACE_BOXES: OrderedDict = OrderedDict()
+_FACE_BOXES: OrderedDict = OrderedDict()  # frame key -> tuple of boxes (fractions), largest first
 _FACE_BOX_LIMIT = 20000
 
 
@@ -229,7 +229,14 @@ def _detector(name: str = FACE_DETECTOR):
 
 def face_boxes(frames: torch.Tensor, detector: str = FACE_DETECTOR, confidence: float = 0.3, batch: int = 16,
                progress=None) -> list:
-    """Largest face box (x1, y1, x2, y2) of every frame, None where none is found.
+    """Largest face box (x1, y1, x2, y2) of every frame, None where none is found."""
+    return [boxes[0] if boxes else None
+            for boxes in all_face_boxes(frames, detector, confidence, batch, progress)]
+
+
+def all_face_boxes(frames: torch.Tensor, detector: str = FACE_DETECTOR, confidence: float = 0.3, batch: int = 16,
+                   progress=None) -> list:
+    """Every face box (x1, y1, x2, y2) of every frame, largest first ([] where none is found).
 
     Boxes are cached as fractions of the frame, so a cached frame of another size
     maps back correctly.  ``progress(done)`` is called after each detected batch.
@@ -248,21 +255,241 @@ def face_boxes(frames: torch.Tensor, detector: str = FACE_DETECTOR, confidence: 
             images = [(frames[i, ..., :3].clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()[..., ::-1].copy()
                       for i in chunk]
             for i, result in zip(chunk, model.predict(images, conf=confidence, verbose=False)):
-                best = None
-                for x1, y1, x2, y2 in result.boxes.xyxy.cpu().tolist():
-                    if best is None or (x2 - x1) * (y2 - y1) > (best[2] - best[0]) * (best[3] - best[1]):
-                        best = (x1, y1, x2, y2)
-                _FACE_BOXES[keys[i]] = None if best is None else (
-                    best[0] / width, best[1] / height, best[2] / width, best[3] / height)
+                found = sorted(result.boxes.xyxy.cpu().tolist(), key=lambda b: -(b[2] - b[0]) * (b[3] - b[1]))
+                _FACE_BOXES[keys[i]] = tuple((x1 / width, y1 / height, x2 / width, y2 / height)
+                                             for x1, y1, x2, y2 in found)
                 if len(_FACE_BOXES) > _FACE_BOX_LIMIT:
                     _FACE_BOXES.popitem(last=False)
             if progress is not None:
                 progress(min(len(todo), begin + batch))
     out = []
     for key in keys:
-        box = _FACE_BOXES.get(key)
-        out.append(None if box is None else (box[0] * width, box[1] * height, box[2] * width, box[3] * height))
+        boxes = _FACE_BOXES.get(key) or ()
+        out.append([(b[0] * width, b[1] * height, b[2] * width, b[3] * height) for b in boxes])
     return out
+
+
+# @blur_people (H3 动作迁移预处理): blur only these people.  Each is given in the md
+# as a moment and the face centre there; the node takes that face's identity
+# (insightface buffalo_l: 106-point alignment + w600k_r50, ArcFace) and keeps
+# only the faces that match it.  Measured on a two-person car video: the same
+# person >= 0.21 cosine even in profile, the other person <= 0.13.
+PERSON_MATCH = 0.2
+# A face missed by recognition (back of the head, upside down) still counts as the
+# person when it overlaps the person's box of a frame at most this far away.
+TRACK_FILL = 12
+TRACK_IOU = 0.3
+RECOGNITION_ROOT = ("insightface", "models")
+# Default recognizer: insightface buffalo_l (ArcFace R50 trained on WebFace600K).
+RECOGNIZER_DEFAULT = "buffalo_l/w600k_r50.onnx"
+LANDMARKS_FILE = "2d106det.onnx"
+# Recognition models of the insightface packs (512-d ArcFace embeddings).
+RECOGNITION_FILES = ("w600k_r50.onnx", "glintr100.onnx", "w600k_mbf.onnx")
+_ARCFACE = ((38.2946, 51.6963), (73.5318, 51.5014), (56.0252, 71.7366), (41.5493, 92.3655), (70.7299, 92.2041))
+_FIVE_POINTS = (38, 88, 86, 52, 61)   # 106-point landmarks: eyes, nose tip, mouth corners
+_RECOGNIZER: dict = {}
+_EMBEDDINGS: OrderedDict = OrderedDict()   # (frame key, box) -> unit vector
+# Resolved people of a block: key -> list of unit vectors (one per listed person).
+_PEOPLE: OrderedDict = OrderedDict()
+
+
+def _recognition_root() -> str:
+    import os
+
+    import folder_paths
+    return os.path.join(getattr(folder_paths, "models_dir", "models"), *RECOGNITION_ROOT)
+
+
+def recognizer_choices() -> list:
+    """「人脸识别模型」: every insightface pack under models/insightface/models with the
+    106-point landmark model and a recognition model, as "pack/file.onnx" (buffalo_l first)."""
+    import os
+
+    found = []
+    root = _recognition_root()
+    if os.path.isdir(root):
+        for pack in sorted(os.listdir(root)):
+            folder = os.path.join(root, pack)
+            if not os.path.isfile(os.path.join(folder, LANDMARKS_FILE)):
+                continue
+            found += [f"{pack}/{name}" for name in RECOGNITION_FILES if os.path.isfile(os.path.join(folder, name))]
+    found.sort(key=lambda choice: (choice != RECOGNIZER_DEFAULT, choice))
+    return found or [RECOGNIZER_DEFAULT]
+
+
+def _recognizer(name: str = RECOGNIZER_DEFAULT):
+    """(landmark session, recognition session) of an insightface pack ("pack/file.onnx")."""
+    name = str(name or RECOGNIZER_DEFAULT).replace("\\", "/")
+    if name in _RECOGNIZER:
+        return _RECOGNIZER[name]
+    import os
+
+    try:
+        import onnxruntime as ort
+    except ImportError as exc:
+        raise RuntimeError("@blur_people 认人需要 onnxruntime，当前环境没有安装。") from exc
+    pack, _, model = name.partition("/")
+    folder = os.path.join(_recognition_root(), pack)
+    paths = [os.path.join(folder, LANDMARKS_FILE), os.path.join(folder, model or "w600k_r50.onnx")]
+    missing = [p for p in paths if not os.path.isfile(p)]
+    if missing:
+        raise RuntimeError(f"@blur_people 认人要用的人脸识别模型 {name} 不全：缺 {', '.join(os.path.basename(p) for p in missing)}，"
+                           f"请放到 models/{'/'.join(RECOGNITION_ROOT)}/{pack}/（默认用 {RECOGNIZER_DEFAULT}）。")
+    providers = [p for p in ("CUDAExecutionProvider", "CPUExecutionProvider") if p in ort.get_available_providers()]
+    _RECOGNIZER[name] = (ort.InferenceSession(paths[0], providers=providers),
+                         ort.InferenceSession(paths[1], providers=providers))
+    return _RECOGNIZER[name]
+
+
+def _embedding(frame: torch.Tensor, box, recognizer: str = RECOGNIZER_DEFAULT) -> "object":
+    """Unit identity vector (numpy, 512) of the face in ``box`` of frame [H, W, C] (0-1)."""
+    import cv2
+    import numpy as np
+
+    landmarks, recognition = _recognizer(recognizer)
+    image = (frame[..., :3].clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()[..., ::-1].copy()
+    x1, y1, x2, y2 = box
+    cx, cy, size = (x1 + x2) / 2, (y1 + y2) / 2, max(x2 - x1, y2 - y1) * 1.5
+    scale = 192 / max(1.0, size)
+    matrix = np.array([[scale, 0, 96 - cx * scale], [0, scale, 96 - cy * scale]], dtype=np.float32)
+    crop = cv2.warpAffine(image, matrix, (192, 192))
+    blob = cv2.dnn.blobFromImage(crop, 1.0, (192, 192), (0, 0, 0), swapRB=True)
+    points = (landmarks.run(None, {landmarks.get_inputs()[0].name: blob})[0].reshape(-1, 2) + 1) * 96
+    inverse = cv2.invertAffineTransform(matrix)
+    points = points @ inverse[:, :2].T + inverse[:, 2]
+    five = points[list(_FIVE_POINTS)].astype(np.float32)
+    align, _ = cv2.estimateAffinePartial2D(five, np.array(_ARCFACE, dtype=np.float32), method=cv2.LMEDS)
+    if align is None:
+        return None
+    face = cv2.warpAffine(image, align, (112, 112), borderValue=0)
+    blob = cv2.dnn.blobFromImage(face, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
+    vector = recognition.run(None, {recognition.get_inputs()[0].name: blob})[0][0]
+    norm = float(np.linalg.norm(vector))
+    return vector / norm if norm > 0 else None
+
+
+def _face_embedding(frame: torch.Tensor, box, detector: str, recognizer: str = RECOGNIZER_DEFAULT):
+    # Box as fractions of the frame: the same face in a resized copy of the frame hits the cache.
+    height, width = int(frame.shape[0]), int(frame.shape[1])
+    key = (_frame_key(frame, detector), str(recognizer),
+           tuple(round(v / (width if i % 2 == 0 else height), 3) for i, v in enumerate(box)))
+    if key not in _EMBEDDINGS:
+        _EMBEDDINGS[key] = _embedding(frame, box, recognizer)
+        if len(_EMBEDDINGS) > _FACE_BOX_LIMIT:
+            _EMBEDDINGS.popitem(last=False)
+    return _EMBEDDINGS[key]
+
+
+def resolve_people(frame_at, anchors, detector: str = FACE_DETECTOR, recognizer: str = RECOGNIZER_DEFAULT) -> list:
+    """Identity vectors of the listed people.
+
+    ``anchors``: (frame, x, y) per person, (x, y) the face centre as fractions of
+    the frame; ``frame_at(frame)`` returns that source frame [H, W, C].  The face
+    whose box holds the point (else the nearest) is taken.
+    """
+    vectors = []
+    for frame_index, x, y in anchors:
+        frame = frame_at(int(frame_index))[0]
+        height, width = int(frame.shape[0]), int(frame.shape[1])
+        boxes = all_face_boxes(frame[None], detector)[0]
+        if not boxes:
+            raise ValueError(f"@blur_people：第 {frame_index / FPS:.2f} 秒这一帧没有检测到人脸，"
+                             "请换一个这个人正脸清楚的时间点。")
+        px, py = float(x) * width, float(y) * height
+
+        def distance(box):
+            inside = box[0] <= px <= box[2] and box[1] <= py <= box[3]
+            return (0 if inside else 1, ((box[0] + box[2]) / 2 - px) ** 2 + ((box[1] + box[3]) / 2 - py) ** 2)
+
+        box = min(boxes, key=distance)
+        vector = _face_embedding(frame, box, detector, recognizer)
+        if vector is None:
+            raise ValueError(f"@blur_people：第 {frame_index / FPS:.2f} 秒 ({x}, {y}) 的脸认不出来，请换一个正脸清楚的时间点。")
+        vectors.append(vector)
+    return vectors
+
+
+def register_people(key: str, vectors: list, recognizer: str = RECOGNIZER_DEFAULT) -> str:
+    _PEOPLE[key] = (vectors, str(recognizer))
+    _PEOPLE.move_to_end(key)
+    while len(_PEOPLE) > 64:
+        _PEOPLE.popitem(last=False)
+    return key
+
+
+def people(key):
+    """The registered people's vectors (None = not registered)."""
+    entry = _PEOPLE.get(key) if key else None
+    return entry[0] if entry else None
+
+
+def people_recognizer(key) -> str:
+    """The recognizer the people of ``key`` were taken with (every face is compared with the same one)."""
+    entry = _PEOPLE.get(key) if key else None
+    return entry[1] if entry else RECOGNIZER_DEFAULT
+
+
+def _iou(a, b) -> float:
+    x1, y1, x2, y2 = max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def frame_faces(frames: torch.Tensor, detector: str = FACE_DETECTOR, progress=None,
+                recognizer: str = RECOGNIZER_DEFAULT) -> list:
+    """Every face of every frame with its identity vector: [[(box, vector or None), ...], ...]."""
+    every = all_face_boxes(frames, detector, progress=progress)
+    return [[(box, _face_embedding(frames[i], box, detector, recognizer)) for box in boxes]
+            for i, boxes in enumerate(every)]
+
+
+def assign_people(faces: list, vectors: list) -> list:
+    """One box list per listed person (None where that person's face is not seen), smoothed.
+
+    ``faces`` from ``frame_faces``.  Every face is given to the most similar
+    listed person when the similarity is at least ``PERSON_MATCH``; each person
+    keeps the best face of a frame.  A face recognition misses (back of the
+    head, upside down, hand over it) joins a person when it overlaps that
+    person's box within ``TRACK_FILL`` frames.
+    """
+    import numpy as np
+
+    count = len(faces)
+    tracks = [[None] * count for _ in vectors]
+    scores = [[-1.0] * count for _ in vectors]
+    left = []  # (frame, box) not recognised as anyone
+    matrix = np.stack(vectors) if vectors else None
+    for i, found in enumerate(faces):
+        for box, vector in found:
+            sims = matrix @ vector if vector is not None and matrix is not None else None
+            who = int(np.argmax(sims)) if sims is not None else -1
+            if who >= 0 and float(sims[who]) >= PERSON_MATCH and float(sims[who]) > scores[who][i]:
+                if tracks[who][i] is not None:
+                    left.append((i, tracks[who][i]))
+                tracks[who][i], scores[who][i] = box, float(sims[who])
+            else:
+                left.append((i, box))
+    for i, box in left:
+        best, best_iou = -1, TRACK_IOU
+        for who, track in enumerate(tracks):
+            if track[i] is not None:
+                continue
+            near = [j for j in range(max(0, i - TRACK_FILL), min(count, i + TRACK_FILL + 1)) if scores[who][j] >= 0]
+            if not near:
+                continue
+            overlap = _iou(box, track[min(near, key=lambda j: abs(j - i))])
+            if overlap >= best_iou:
+                best, best_iou = who, overlap
+        if best >= 0:
+            tracks[best][i] = box
+    return [_smooth_boxes(track) for track in tracks]
+
+
+def people_tracks(frames: torch.Tensor, vectors: list, detector: str = FACE_DETECTOR, progress=None,
+                  recognizer: str = RECOGNIZER_DEFAULT) -> list:
+    """``assign_people`` over these frames."""
+    return assign_people(frame_faces(frames, detector, progress=progress, recognizer=recognizer), vectors)
 
 
 def _smooth_boxes(boxes: list) -> list:
@@ -347,27 +574,54 @@ def describe_plan(boxes: list, setting, frame_height: int) -> str:
     return f"{int(setting)} 档"
 
 
-def blur_faces(frames: torch.Tensor, setting, detector: str = FACE_DETECTOR) -> torch.Tensor:
-    """Every frame's face blurred (frames [N, H, W, C], 0-1).
+def blur_tracks(frames: torch.Tensor, setting, detector: str = FACE_DETECTOR, vectors=None, progress=None,
+                recognizer: str = RECOGNIZER_DEFAULT) -> list:
+    """Face box lists to blur: the largest face of every frame, or one list per person of ``vectors``."""
+    if vectors:
+        return people_tracks(frames, vectors, detector, progress=progress, recognizer=recognizer)
+    return [_smooth_boxes(face_boxes(frames, detector, progress=progress))]
+
+
+def blur_faces(frames: torch.Tensor, setting, detector: str = FACE_DETECTOR, people_key=None) -> torch.Tensor:
+    """Faces blurred (frames [N, H, W, C], 0-1): the largest face of every frame, or
+    only the people registered under ``people_key`` (@blur_people).
 
     ``setting``: None / 0 = off, an int level 1-5, or "auto" (level from each
     frame's face size, averaged over 9 frames so it does not flicker).
     """
     if setting in (None, 0) or int(frames.shape[0]) == 0:
         return frames
-    boxes = _smooth_boxes(face_boxes(frames, detector))
-    if all(box is None for box in boxes):
-        logging.warning("Easy H3 动作迁移预处理：这一窗 %d 帧都没检测到人脸，原片不做模糊", len(boxes))
+    vectors = people(people_key)
+    if people_key and vectors is None:
+        raise RuntimeError("@blur_people：要模糊的人还没有认出来（动作迁移分段没有先解析），请重新运行。")
+    tracks = blur_tracks(frames, setting, detector, vectors, recognizer=people_recognizer(people_key))
+    if all(box is None for track in tracks for box in track):
+        logging.warning("Easy H3 动作迁移预处理：这一窗 %d 帧都没%s，原片不做模糊", int(frames.shape[0]),
+                        "认出要模糊的人" if vectors else "检测到人脸")
         return frames
-    divisors = blur_plan(boxes, setting, int(frames.shape[1]))
-    logging.info("Easy H3 动作迁移预处理：脸部模糊 %s，%d 帧", describe_plan(boxes, setting, int(frames.shape[1])), len(boxes))
-    return torch.stack([blur_face(frame, box, divisor) if box is not None else frame
-                        for frame, box, divisor in zip(frames, boxes, divisors)])
+    height = int(frames.shape[1])
+    plans = [blur_plan(track, setting, height) for track in tracks]
+    logging.info("Easy H3 动作迁移预处理：脸部模糊 %s，%d 帧%s", describe_plan([b for t in tracks for b in t], setting, height),
+                 int(frames.shape[0]), f"，只模糊 {len(tracks)} 个指定的人" if vectors else "")
+    out = []
+    for i, frame in enumerate(frames):
+        for track, plan in zip(tracks, plans):
+            if track[i] is not None:
+                frame = blur_face(frame, track[i], plan[i])
+        out.append(frame)
+    return torch.stack(out)
 
 
 def write_preview(path: str, frames_of, count: int, boxes: list, divisors: list, fps: float = FPS,
                   chunk: int = 32, progress=None) -> None:
-    """Encode the blurred frames to an H.264 mp4, ``chunk`` frames at a time (``frames_of(start, stop)``)."""
+    """Encode the blurred frames to an H.264 mp4, ``chunk`` frames at a time (``frames_of(start, stop)``).
+
+    ``boxes`` / ``divisors``: one list per frame, or a list of such lists (one per person).
+    """
+    if boxes and isinstance(boxes[0], list):
+        tracks, plans = boxes, divisors
+    else:
+        tracks, plans = [boxes], [divisors]
     import av
 
     with av.open(path, mode="w") as container:
@@ -381,8 +635,9 @@ def write_preview(path: str, frames_of, count: int, boxes: list, divisors: list,
                 stream.options = {"crf": "20", "preset": "veryfast"}
             for offset, frame in enumerate(frames):
                 index = start + offset
-                if boxes[index] is not None and divisors[index] > 0:
-                    frame = blur_face(frame, boxes[index], divisors[index])
+                for track, plan in zip(tracks, plans):
+                    if track[index] is not None and plan[index] > 0:
+                        frame = blur_face(frame, track[index], plan[index])
                 pixels = (frame[..., :3].clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()
                 for packet in stream.encode(av.VideoFrame.from_ndarray(pixels, format="rgb24")):
                     container.mux(packet)
@@ -409,4 +664,51 @@ def keyframe_until(model, until: float = KEYFRAME_UNTIL):
         return model
     patched = model.clone()
     patched.add_wrapper_with_key(comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, WRAPPER_KEY, release)
+    return patched
+
+
+# ---- the Remake LoRA, per block ----------------------------------------------
+# Only 人物替换 blocks get it (a talk block in the same film must not), so
+# H3动作迁移预处理 picks it (remake_lora) instead of the workflow's LoRA list.
+LOGGER = logging.getLogger("FeiHouEasyH3")
+LORA_STRENGTH = 1.0
+REMAKE_HINT = "remake_swap"
+_LORA_CACHE: dict = {}
+
+
+def remake_lora_name() -> str | None:
+    """The Viggle Remake swap LoRA found by file name (the node's default choice)."""
+    import folder_paths
+    found = [name for name in folder_paths.get_filename_list("loras")
+             if REMAKE_HINT in name.replace("\\", "/").rsplit("/", 1)[-1].lower()]
+    return sorted(found)[-1] if found else None
+
+
+def _load_bypass_lora(model, name: str, strength: float = LORA_STRENGTH):
+    """``model`` with LoRA ``name`` in bypass mode (like the LoRA list's 旁路)."""
+    import os
+    import comfy.sd
+    import folder_paths
+    from .lora_compat import compatible_lora
+    path = folder_paths.get_full_path_or_raise("loras", name)
+    stat = os.stat(path)
+    signature = (path, int(stat.st_mtime_ns), int(stat.st_size))
+    lora = _LORA_CACHE.get(signature)
+    if lora is None:
+        lora = comfy.utils.load_torch_file(path, safe_load=True)
+        _LORA_CACHE[signature] = lora
+        while len(_LORA_CACHE) > 3:
+            _LORA_CACHE.pop(next(iter(_LORA_CACHE)))
+    patched, _clip = comfy.sd.load_bypass_lora_for_models(model, None, compatible_lora(model, lora, name),
+                                                         strength, 0.0)
+    return patched
+
+
+def with_remake_lora(model, name: str | None):
+    """人物替换 blocks: the Viggle Remake swap LoRA, bypass mode at strength 1 (as the LoRA list's 旁路 did)."""
+    if not name:
+        LOGGER.warning("Easy H3 人物替换：Remake LoRA 选的是 无，这一块没加 Remake LoRA")
+        return model
+    patched = _load_bypass_lora(model, name)
+    LOGGER.info("Easy H3 人物替换：本块加 Remake LoRA %s（旁路，强度 %g，只用在人物替换的块上）", name, LORA_STRENGTH)
     return patched

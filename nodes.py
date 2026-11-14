@@ -4079,7 +4079,7 @@ def _window_text(prompt, start, count):
 
 def _remake_conditioning(bundle, prompt, width, height, length, items: list[_MediaInput], *,
                          refmod_data=None, picture_labels: Mapping[int, int] | None = None, face_blur=None,
-                         face_detector: str = remake_mode.FACE_DETECTOR):
+                         face_detector: str = remake_mode.FACE_DETECTOR, face_people=None):
     """Remake 替换: reference video 1 is the source to edit, the pictures the new look.
 
     The conditioning the Viggle Remake swap LoRA was trained on (see remake.py):
@@ -4107,7 +4107,7 @@ def _remake_conditioning(bundle, prompt, width, height, length, items: list[_Med
         frames = torch.cat([frames, frames[-1:].repeat(frame_count - frames.shape[0], 1, 1, 1)])
     frames = remake_mode.cover(frames, width, height)
     if face_blur:
-        frames = remake_mode.blur_faces(frames, face_blur, face_detector)
+        frames = remake_mode.blur_faces(frames, face_blur, face_detector, people_key=face_people)
     if soundtrack is not None:
         soundtrack = _window_audio(soundtrack, _frame_offset(source.value), frame_count)
 
@@ -4150,11 +4150,11 @@ def _remake_conditioning(bundle, prompt, width, height, length, items: list[_Med
     return conditioning, latent, resolved_prompt
 
 
-def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None, refmod_data=None, remake: bool = False, face_blur=None, face_detector: str = remake_mode.FACE_DETECTOR):
+def _reference_conditioning(bundle, prompt, width, height, length, ref_image_size, items: list[_MediaInput], *, text_only=False, reference_cache=None, refmod_data=None, remake: bool = False, face_blur=None, face_detector: str = remake_mode.FACE_DETECTOR, face_people=None):
     if remake:
         # Remake 替换 (H3 动作迁移预处理): reference video 1 is the source to edit.
         return _remake_conditioning(bundle, prompt, width, height, length, items,
-                                    refmod_data=refmod_data, face_blur=face_blur, face_detector=face_detector)
+                                    refmod_data=refmod_data, face_blur=face_blur, face_detector=face_detector, face_people=face_people)
     prompt = timed_prompt.strip_time_tags(prompt)
     latent, frame_count = h3._empty_av_latent(width, height, length)
     ref_items = list(refmod_data[0]) if refmod_data else []
@@ -4553,6 +4553,12 @@ class FeiHouEasyH3:
         if refmods and mode != MODE_REFERENCE:
             raise ValueError("RefMods require reference mode / MOD 请使用参考生视频模式。")
         keyframe_role = _canonical_keyframe_role(keyframe_role)
+        md_aspect = ((production_shot.get("motion") or {}).get("aspect") if isinstance(production_shot, dict)
+                     and isinstance(production_shot.get("motion"), dict) else "")
+        if md_aspect and md_aspect in ASPECT_RATIOS and md_aspect != str(aspect_ratio):
+            # 分镜 md @aspect: the film's framing, so a forgotten Setup setting cannot change it.
+            _LOGGER.info("Easy H3 canvas: 分镜 md 的 @aspect %s 覆盖 Setup 的画幅比例 %s", md_aspect, aspect_ratio)
+            aspect_ratio = md_aspect
         width, height = _canvas_dimensions(resolution, aspect_ratio, width, height)
         # Motion-transfer shot (分镜提示词 · RH): media come from Media · RH and
         # each gallery video is decoded only for this block.
@@ -4719,11 +4725,11 @@ class FeiHouEasyH3:
             )
             source_frames, source_audio = _segment_source(source_items)
             segment_builder = H3SegmentBuilder(
-                build=lambda start, count, w, h, trigger_prefix="", video_sizes=None, end=None, soundtrack=True, remake=False, face_blur=None, face_detector=remake_mode.FACE_DETECTOR, _p=prompt, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
+                build=lambda start, count, w, h, trigger_prefix="", video_sizes=None, end=None, soundtrack=True, remake=False, face_blur=None, face_detector=remake_mode.FACE_DETECTOR, face_people=None, _p=prompt, _r=ref_image_size, _i=tuple(items), _t=reference_text_only, _m=refmod_data:
                     _reference_conditioning(h3_bundle, f"{trigger_prefix}\n{_window_text(_p, start, count)}" if trigger_prefix else _window_text(_p, start, count), w, h, count, _r,
                                             _window_reference_items(list(_i), start, count, video_sizes, w, h, _r, end, soundtrack),
                                             text_only=_t, reference_cache=reference_cache, refmod_data=_m, remake=remake,
-                                            face_blur=face_blur, face_detector=face_detector)[:2],
+                                            face_blur=face_blur, face_detector=face_detector, face_people=face_people)[:2],
                 source_frames=source_frames,
                 source_audio=source_audio,
                 source_window=_segment_source_window(source_items),

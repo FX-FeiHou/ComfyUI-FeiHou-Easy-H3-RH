@@ -1,3 +1,16 @@
+import os as _os
+
+if _os.name == "nt":
+    # On some Windows setups aiohttp's sendfile (TransmitFile) stalls after the
+    # headers, so /view and static files never arrive (media cards stuck at
+    # "上传中"). The plain read/write fallback is the same as AIOHTTP_NOSENDFILE=1.
+    try:
+        import aiohttp.web_fileresponse as _fileresponse
+
+        _fileresponse.NOSENDFILE = True
+    except Exception:
+        pass
+
 from .nodes import (
     FeiHouEasyH3Resolution,
     FeiHouEasyH3,

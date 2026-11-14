@@ -38,7 +38,7 @@ import re
 import shutil
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import folder_paths
@@ -62,14 +62,44 @@ MAX_HOLD_SECONDS = 600.0
 OUTPUT_SUBDIR = "feihou_h3_rh_motion"
 STATE_VERSION = 1
 
+# 顺序生成: blocks in order; 镜号 1+ follows the progress (an untouched 镜号 resumes,
+# 1 starts the film over, another number starts there afresh), 0 = 自动 starts the
+# film over on every run.  手动设置: only the listed blocks.
+START_SEQUENCE = "顺序生成"
+START_MANUAL = "手动设置"
+START_CHOICES = [START_SEQUENCE, START_MANUAL]
+# Saved before 顺序生成: both became it.
 START_AUTO = "自动续接"
 START_RESTART = "从头开始"
-START_MANUAL = "手动设置"
+LEGACY_STARTS = {START_AUTO: START_SEQUENCE, START_RESTART: START_SEQUENCE}
+# 镜号 of the next run of a film in 自动 (0) mode, queued by the server or the browser:
+# "0@3" = continue at block 3 (a plain 0 typed by the user starts the film over).
+AUTO_CONTINUE = re.compile(r"^0@(\d+)$")
+# @aspect 9:16: the canvas aspect ratio for Setup (overrides its aspect_ratio).
+ASPECT_KEYS = {"aspect", "aspect_ratio", "画幅", "画幅比例", "比例"}
+ASPECT_CHOICES = ("1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9")
+
+
+def start_mode(value) -> str:
+    """顺序生成 or 手动设置 (older saves: 自动续接 / 从头开始 → 顺序生成)."""
+    value = str(value or START_SEQUENCE)
+    return LEGACY_STARTS.get(value, value if value in START_CHOICES else START_SEQUENCE)
+
+
+def next_run_numbers(current, block: int) -> str:
+    """镜号 of the queued next run: the block number, or 0@block in 自动 mode."""
+    text = str(current or "").strip()
+    return f"0@{int(block)}" if (not text or re.fullmatch(r"0+", text) or AUTO_CONTINUE.match(text)) else str(int(block))
 
 # ``===== FEIHOU_SHOT 03 =====`` (case-insensitive, at least one '=' on each side).
 SENTINEL = re.compile(r"^=+\s*FEIHOU_SHOT\s+(\d+)\s*=+\s*$", re.IGNORECASE)
-# ``@range 00:00.00-00:03.08`` / ``@pictures 1,3`` / ``@continue``.
-DIRECTIVE = re.compile(r"^@([A-Za-z_一-鿿]+)(?:\s+(.*?))?\s*$")
+# ``@range 00:00.00-00:03.08`` / ``@pictures 1,3`` / ``@continue``.  The md is written
+# with English keys and comma-separated values (``@segment context,window=260,overlap=39``);
+# Chinese keys and values and space-separated values from older mds are read too.
+# The key ends at a space or ``:`` / ``=`` (so a body line like "@图片1 ..." is not one).
+DIRECTIVE = re.compile(r"^@([A-Za-z_一-鿿]+)(?:(?:\s*[:：=＝]\s*|\s+)(.*?))?\s*$")
+# Separators between a directive's values: commas (canonical), semicolons, 、 and spaces.
+VALUE_SPLIT = re.compile(r"[\s,，;；、]+")
 # 「原片直出」: the block is not sampled, the source frames go straight to the film.
 PASSTHROUGH_KEYS = {"passthrough", "原片", "原片直出", "直出"}
 # @sound: which audio this block keeps in the film (overrides Motion Collect's audio_output).
@@ -88,16 +118,31 @@ AUDIO_WINDOW_ON = {"分块", "按分块", "跟随分镜", "跟随分块", "windo
 # @first 4: picture card 4 is the block's first frame (keyframe at frame 0), so a
 # block run on its own still starts from the right person when no previous tail exists.
 FIRST_KEYS = {"first", "首帧", "首帧图"}
-# @脸部模糊 3 / 自动 / 关 (H3 动作迁移预处理): this block's source-face blur level,
+# @face_blur 3 / auto / off (@脸部模糊 3 / 自动 / 关; H3 动作迁移预处理): this block's source-face blur level,
 # over the preprocess node's own setting.
-FACE_BLUR_KEYS = {"脸部模糊", "模糊", "blur", "face_blur", "faceblur"}
-# @分段 上下文窗口 192 34 30秒 / 帧窗口 124 22 / 不分段 (header = every block, a block
+FACE_BLUR_KEYS = {"face_blur", "脸部模糊", "模糊", "blur", "faceblur"}
+# @blur_people 30.13@0.18:0.58, 47.2@0.68:0.35 (@模糊人物): blur only these people's faces.
+# Each person is a moment (md clock) and the face centre there as fractions of the
+# frame (x:y); H3 动作迁移预处理 recognises them by face.  Header = every block,
+# a block's own line replaces it; a block only uses the moments inside its @range.
+BLUR_PEOPLE_KEYS = {"blur_people", "模糊人物", "模糊的人", "people"}
+# @mode swap / off (@模式 人物替换 / 关闭; H3 动作迁移预处理 set to 自动):
+# what this block (or, in the header, every block) does with reference video 1.
+MODE_KEYS = {"mode", "模式"}
+MODE_OFF, MODE_SWAP = "off", "swap"
+MODE_WORDS = {"关闭": MODE_OFF, "关": MODE_OFF, "原生": MODE_OFF, "off": MODE_OFF, "none": MODE_OFF,
+              "人物替换": MODE_SWAP, "替换": MODE_SWAP, "换人": MODE_SWAP, "remake": MODE_SWAP, "swap": MODE_SWAP}
+# 动作迁移 (Motion Transfer LoRA, TARA / guide latent) was removed: say so instead of "unknown value".
+REMOVED_MODE_WORDS = {"动作迁移", "迁移", "motion", "motion_transfer"}
+MODE_USAGE = "例如 @mode swap 或 @mode off"
+# @segment context,window=192,overlap=39,chunk=30 / chain,length=124,overlap=22 / whole (header = every block, a block
 # overrides it): how Motion Segment samples the block when its 分段方式 is 自动.
-SEGMENTATION_KEYS = {"分段", "分段方式", "segmentation", "segment"}
+SEGMENTATION_KEYS = {"segment", "segmentation", "分段", "分段方式"}
 SEG_WHOLE, SEG_CHAIN, SEG_CONTEXT = "不分段", "帧窗口", "上下文窗口"
 SEG_ALIASES = {"不分段": SEG_WHOLE, "整段": SEG_WHOLE, "关闭": SEG_WHOLE, "关": SEG_WHOLE, "whole": SEG_WHOLE, "off": SEG_WHOLE,
                "帧窗口": SEG_CHAIN, "接续": SEG_CHAIN, "chain": SEG_CHAIN,
                "上下文窗口": SEG_CONTEXT, "上下文": SEG_CONTEXT, "context": SEG_CONTEXT}
+SEG_ENGLISH = {SEG_WHOLE: "whole", SEG_CHAIN: "chain", SEG_CONTEXT: "context"}
 # Same ranges as Motion Segment's option lists; values left out use its recommended ones.
 SEG_SPECS = {
     SEG_CHAIN: {"frames": (39, 497), "overlaps": ("22", "39", "5"), "default": (124, "22")},
@@ -108,6 +153,12 @@ SEG_SPECS = {
 LEGACY_CONTEXT_OVERLAPS = {"34": "39", "68": "73", "102": "107"}
 CONTEXT_SEGMENT_SECONDS = (20, 30, 45, 60)
 CONTEXT_SEGMENT_WHOLE = "整块一次"
+CONTEXT_CHUNK_WHOLE = {CONTEXT_SEGMENT_WHOLE, "整块", "all", "whole"}
+# Every directive key (English or Chinese) → its English key.
+KEY_ALIASES = {alias: canonical for canonical, aliases in (
+    ("passthrough", PASSTHROUGH_KEYS), ("sound", SOUND_KEYS), ("hold", HOLD_KEYS), ("video", VIDEO_KEYS),
+    ("audio", AUDIO_WINDOW_KEYS), ("first", FIRST_KEYS), ("face_blur", FACE_BLUR_KEYS), ("blur_people", BLUR_PEOPLE_KEYS), ("aspect", ASPECT_KEYS), ("mode", MODE_KEYS),
+    ("segment", SEGMENTATION_KEYS)) for alias in aliases}
 
 
 @dataclass(frozen=True)
@@ -134,10 +185,16 @@ class Shot:
     first_picture: int = 0
     # @audio 分块 (md header): audio cards are cut to this block's @range.
     audio_window: bool = False
-    # @脸部模糊: "" = not written (the preprocess node decides), "off", "auto" or "1"-"5".
+    # @face_blur: "" = not written (the preprocess node decides), "off", "auto" or "1"-"5".
     face_blur: str = ""
-    # @分段 (this block, else the md header): None = not written.
+    # @aspect: Setup's aspect ratio for this block ("" = Setup's own setting).
+    aspect: str = ""
+    # @blur_people: (seconds, x, y) of every person whose face is blurred; () = the largest face.
+    blur_people: tuple = ()
+    # @segment (this block, else the md header): None = not written.
     segmentation: tuple = ()
+    # @mode (this block, else the md header): "" = not written, "off" or "swap".
+    mode: str = ""
 
     @property
     def seconds(self) -> float:
@@ -241,6 +298,12 @@ def normalize_prompt_tags(prompt: str, shot_index: int = 0) -> str:
     return text
 
 
+def directive_key(name: str) -> str:
+    """The English key of a directive written in English or Chinese (unknown keys stay as written)."""
+    key = str(name or "").strip().lower()
+    return KEY_ALIASES.get(key, key)
+
+
 def _split_directives(body: list[tuple[int, str]], sentinel_line: int) -> tuple[dict[str, str], str]:
     """Split a block into its leading ``@`` directives and the prompt body."""
     directives: dict[str, str] = {}
@@ -253,7 +316,7 @@ def _split_directives(body: list[tuple[int, str]], sentinel_line: int) -> tuple[
         match = DIRECTIVE.match(text)
         if not match:
             break
-        directives[match.group(1).lower()] = (match.group(2) or "").strip()
+        directives[directive_key(match.group(1))] = (match.group(2) or "").strip()
         start = offset + 1
     prompt = "\n".join(line for _number, line in body[start:]).strip()
     if not directives:
@@ -282,15 +345,17 @@ def _pictures(value: str, line_hint: str) -> tuple[int, ...]:
     return tuple(numbers)
 
 
-# @分段 fields, written 名字=值 (Chinese or English names, any order).
+# @segment fields, written name=value (English or Chinese names, any order).
 SEG_FIELD_NAMES = {
-    "窗口": "window", "window": "window",
-    "段长": "length", "每段帧数": "length", "length": "length",
-    "重叠": "overlap", "overlap": "overlap",
-    "每段": "segment", "每段上限": "segment", "segment": "segment",
+    "window": "window", "窗口": "window",
+    "length": "length", "段长": "length", "每段帧数": "length",
+    "overlap": "overlap", "重叠": "overlap",
+    "chunk": "chunk", "segment": "chunk", "每段": "chunk", "每段上限": "chunk",
+    "fade": "fade", "crossfade": "fade", "叠化": "fade", "叠化帧数": "fade",
 }
-SEG_FIELDS = {SEG_CHAIN: ("length", "overlap"), SEG_CONTEXT: ("window", "overlap", "segment")}
-SEG_USAGE = "例如 @分段 上下文窗口 窗口=192 重叠=39 每段=30秒、@分段 帧窗口 段长=124 重叠=22 或 @分段 不分段"
+SEG_FIELDS = {SEG_CHAIN: ("length", "overlap"), SEG_CONTEXT: ("window", "overlap", "chunk", "fade")}
+SEG_USAGE = ("例如 @segment context,window=192,overlap=39,chunk=30、@segment chain,length=124,overlap=22 "
+             "或 @segment whole")
 
 
 def _seg_number(text: str, unit: str) -> str:
@@ -298,70 +363,128 @@ def _seg_number(text: str, unit: str) -> str:
 
 
 def _segmentation_value(value: str, where: str) -> dict:
-    """@分段 上下文窗口 窗口=192 重叠=39 每段=30秒 → {"mode", "segment_frames", "overlap_frames", "context_segment"}.
+    """@segment context,window=192,overlap=39,chunk=30 → {"mode", "segment_frames", "overlap_frames", "context_segment"}.
 
-    Fields left out take Motion Segment's recommended values.  Bare numbers in
-    the field order (窗口 重叠 每段 / 段长 重叠) are still read.
+    Fields left out take Motion Segment's recommended values.  The older Chinese
+    form (@分段 上下文窗口 窗口=192 重叠=39 每段=30秒) and bare numbers in the
+    field order (window overlap chunk / length overlap) are still read.
     """
-    parts = [part for part in re.split(r"[\s,，;；]+", str(value or "").strip()) if part]
+    parts = [part for part in VALUE_SPLIT.split(_equals(value)) if part]
     if not parts or parts[0].lower() not in SEG_ALIASES:
-        raise ValueError(f"{where}：@分段 要先写 不分段、帧窗口 或 上下文窗口（{SEG_USAGE}），实际是「{value}」")
+        raise ValueError(f"{where}：@segment 要先写 whole、chain 或 context（不分段 / 帧窗口 / 上下文窗口；{SEG_USAGE}），"
+                         f"实际是「{value}」")
     mode = SEG_ALIASES[parts[0].lower()]
+    english = SEG_ENGLISH[mode]
     rest = parts[1:]
     if mode == SEG_WHOLE:
         if rest:
-            raise ValueError(f"{where}：@分段 不分段 后面不用写参数，实际是「{value}」")
+            raise ValueError(f"{where}：@segment whole 后面不用写参数，实际是「{value}」")
         return {"mode": mode}
     allowed = SEG_FIELDS[mode]
     fields: dict = {}
     positional = []
     for part in rest:
-        name, sep, raw = part.replace("＝", "=").replace("：", "=").replace(":", "=").partition("=")
+        name, sep, raw = part.partition("=")
         if not sep:
             positional.append(part)
             continue
         key = SEG_FIELD_NAMES.get(name.strip().lower())
         if key not in allowed:
-            names = "、".join(n for n, k in SEG_FIELD_NAMES.items() if k in allowed and not n.isascii())
-            raise ValueError(f"{where}：@分段 {mode} 没有「{name}」这个参数，只能写 {names}（{SEG_USAGE}）")
+            raise ValueError(f"{where}：@segment {english} 没有「{name}」这个参数，只能写 {', '.join(allowed)}（{SEG_USAGE}）")
         if key in fields:
-            raise ValueError(f"{where}：@分段 的「{name}」写了两次")
+            raise ValueError(f"{where}：@segment 的「{name}」写了两次")
         fields[key] = raw
     if positional:
         if fields:
-            raise ValueError(f"{where}：@分段 不能把 名字=值 和不带名字的数字混着写（{SEG_USAGE}）")
+            raise ValueError(f"{where}：@segment 不能把 name=value 和不带名字的数字混着写（{SEG_USAGE}）")
         if len(positional) > len(allowed):
-            raise ValueError(f"{where}：@分段 {mode} 的参数太多（{SEG_USAGE}），实际是「{value}」")
+            raise ValueError(f"{where}：@segment {english} 的参数太多（{SEG_USAGE}），实际是「{value}」")
         fields = dict(zip(allowed, positional))
     spec = SEG_SPECS[mode]
     frames_key = "window" if mode == SEG_CONTEXT else "length"
     frames_text = _seg_number(fields.get(frames_key, str(spec["default"][0])), "帧")
     overlap = _seg_number(fields.get("overlap", spec["default"][1]), "帧")
     if not frames_text.isdigit():
-        raise ValueError(f"{where}：@分段 的帧数要写数字，实际是「{fields.get(frames_key)}」")
+        raise ValueError(f"{where}：@segment 的 {frames_key} 要写帧数，实际是「{fields.get(frames_key)}」")
     frames = int(frames_text)
     low, high = spec["frames"]
     if not low <= frames <= high or (frames - 5) % 17:
-        raise ValueError(f"{where}：@分段 {mode} 的帧数要是 5+17N、在 {low}–{high} 之间（如 124、192、345），实际是 {frames}")
+        raise ValueError(f"{where}：@segment {english} 的 {frames_key} 要是 5+17N、在 {low}–{high} 之间（如 124、192、345），实际是 {frames}")
     if mode == SEG_CONTEXT:
         overlap = LEGACY_CONTEXT_OVERLAPS.get(overlap, overlap)  # 34 / 68 / 102 from older mds
     if overlap not in spec["overlaps"]:
-        raise ValueError(f"{where}：@分段 {mode} 的重叠只能是 {' / '.join(spec['overlaps'])} 帧，实际是 {overlap}")
+        raise ValueError(f"{where}：@segment {english} 的 overlap 只能是 {' / '.join(spec['overlaps'])} 帧，实际是 {overlap}")
     result = {"mode": mode, "segment_frames": str(frames), "overlap_frames": overlap}
     if mode == SEG_CONTEXT:
-        segment = _seg_number(fields.get("segment", "30"), "秒")
-        if segment in {CONTEXT_SEGMENT_WHOLE, "整块"}:
+        chunk = _seg_number(fields.get("chunk", "30"), "秒")
+        if chunk in CONTEXT_CHUNK_WHOLE:
             result["context_segment"] = CONTEXT_SEGMENT_WHOLE
-        elif segment.isdigit() and int(segment) in CONTEXT_SEGMENT_SECONDS:
-            result["context_segment"] = f"{int(segment)} 秒"
+        elif chunk.isdigit() and int(chunk) in CONTEXT_SEGMENT_SECONDS:
+            result["context_segment"] = f"{int(chunk)} 秒"
         else:
-            raise ValueError(f"{where}：@分段 上下文窗口 的每段只能是 "
-                             f"{' / '.join(f'{s}秒' for s in CONTEXT_SEGMENT_SECONDS)} 或 整块，实际是「{fields.get('segment')}」")
+            raise ValueError(f"{where}：@segment context 的 chunk 只能是 "
+                             f"{' / '.join(str(s) for s in CONTEXT_SEGMENT_SECONDS)}（秒）或 all（整块一次），"
+                             f"实际是「{fields.get('chunk')}」")
+        if "fade" in fields:
+            fade = _seg_number(fields["fade"], "帧")
+            if fade in ("all", "全部", "全部重叠"):
+                result["crossfade_frames"] = "全部重叠"
+            elif fade in ("6", "12", "18", "24"):
+                result["crossfade_frames"] = fade
+            else:
+                raise ValueError(f"{where}：@segment context 的 fade 只能是 6 / 12 / 18 / 24（帧）或 all（整个重叠段），"
+                                 f"实际是「{fields['fade']}」")
     return result
 
 
+def _equals(value: Any) -> str:
+    """Full-width ＝ / ： (and ``name: value``) read as ``=``, so ``window＝192`` works too."""
+    return re.sub(r"\s*[=＝:：]\s*", "=", str(value or "").strip())
+
+
+def _mode_value(value: str, where: str) -> str:
+    """@mode swap / off (@模式 人物替换 / 关闭) → "swap" or "off"."""
+    parts = [part for part in VALUE_SPLIT.split(_equals(value).lower()) if part]
+    if parts and parts[0].split("=")[0] in REMOVED_MODE_WORDS:
+        raise ValueError(f"{where}：动作迁移模式已移除，@mode 只能写 swap（人物替换）或 off（关闭）；"
+                         f"要按 H3 原生跑就删掉这一行或写 @mode off，实际是「{value}」")
+    mode = MODE_WORDS.get(parts[0]) if parts else None
+    if mode is None:
+        raise ValueError(f"{where}：@mode 只能写 swap（人物替换）或 off（关闭）（{MODE_USAGE}），实际是「{value}」")
+    if len(parts) > 1:
+        raise ValueError(f"{where}：@mode {parts[0]} 后面不用写参数，实际是「{value}」")
+    return mode
+
+
+def _blur_people(value: str, where: str) -> tuple:
+    """@blur_people 30.13@0.18:0.58, 01:12.5@0.6:0.3 → ((seconds, x, y), ...)."""
+    people = []
+    for item in re.split(r"[,;，；\s]+", str(value or "").strip()):
+        if not item:
+            continue
+        match = re.fullmatch(r"([0-9:.]+)s?@([0-9.]+)[:：/]([0-9.]+)", item)
+        if not match:
+            raise ValueError(f"{where}：@blur_people 每个人写成「秒@x:y」（这一刻这个人脸的中心，x、y 是占画面宽高的比例），"
+                             f"多个人用逗号隔开，例如 @blur_people 30.13@0.18:0.58, 47.2@0.68:0.35，实际是「{item}」")
+        x, y = float(match.group(2)), float(match.group(3))
+        if not (0 <= x <= 1 and 0 <= y <= 1):
+            raise ValueError(f"{where}：@blur_people 的 x、y 要在 0–1 之间（占画面宽高的比例），实际是「{item}」")
+        people.append((time_seconds(match.group(1)), x, y))
+    if not people:
+        raise ValueError(f"{where}：@blur_people 至少要写一个人，例如 @blur_people 30.13@0.18:0.58")
+    return tuple(people)
+
+
+def _aspect(value: str, where: str) -> str:
+    """@aspect 9:16 (also 9x16 / 9比16) → "9:16"."""
+    text = re.sub(r"\s+", "", str(value or "")).replace("：", ":").replace("x", ":").replace("X", ":").replace("比", ":")
+    if text not in ASPECT_CHOICES:
+        raise ValueError(f"{where}：@aspect 只能写 {' / '.join(ASPECT_CHOICES)}，例如 @aspect 9:16，实际是「{value}」")
+    return text
+
+
 def _face_blur(value: str, where: str) -> str:
-    """@脸部模糊 3 / 3档 / 自动 / 关 → "1"-"5", "auto" or "off"."""
+    """@face_blur 3 / auto / off (@脸部模糊 3档 / 自动 / 关) → "1"-"5", "auto" or "off"."""
     text = str(value or "").strip().lower().replace("档", "").replace("级", "")
     if text in {"0", "关", "off", "none", "no", "false", "不模糊", "无"}:
         return "off"
@@ -369,7 +492,7 @@ def _face_blur(value: str, where: str) -> str:
         return "auto"
     if text.isdigit() and 1 <= int(text) <= 5:
         return text
-    raise ValueError(f"{where}：@脸部模糊 只能写 关、自动 或 1–5 档，例如 @脸部模糊 5，实际是「{value}」")
+    raise ValueError(f"{where}：@face_blur 只能写 off、auto 或 1–5（关 / 自动 / 1–5 档），例如 @face_blur 5，实际是「{value}」")
 
 
 def _flag(value: str) -> bool:
@@ -387,6 +510,9 @@ def parse_shot_prompts(text: str) -> list[Shot]:
     hold = 0.0
     audio_window = False
     header_segmentation = ()
+    header_mode = ""
+    header_people = ()
+    header_aspect = ""
     for number, line in enumerate(lines, 1):
         match = SENTINEL.match(line.strip())
         if match:
@@ -397,14 +523,21 @@ def parse_shot_prompts(text: str) -> list[Shot]:
             current.append((number, line))
             continue
         header = DIRECTIVE.match(line.strip())
-        if header and header.group(1).lower() in SEGMENTATION_KEYS:
+        header_key = directive_key(header.group(1)) if header else ""
+        if header_key == "segment":
             header_segmentation = tuple(_segmentation_value(header.group(2), f"第 {number} 行").items())
-        elif header and header.group(1).lower() in HOLD_KEYS:
+        elif header_key == "mode":
+            header_mode = _mode_value(header.group(2), f"第 {number} 行")
+        elif header_key == "aspect":
+            header_aspect = _aspect(header.group(2), f"第 {number} 行")
+        elif header_key == "blur_people":
+            header_people = _blur_people(header.group(2), f"第 {number} 行")
+        elif header_key == "hold":
             hold = _hold_seconds(header.group(2), number)
-        elif header and header.group(1).lower() in AUDIO_WINDOW_KEYS:
+        elif header_key == "audio":
             value = str(header.group(2) or "").strip().lower()
             if value not in AUDIO_WINDOW_ON:
-                raise ValueError(f"第 {number} 行：@audio 只能写 分块（音频卡按每块的 @range 截取），实际是「{header.group(2) or ''}」")
+                raise ValueError(f"第 {number} 行：@audio 只能写 block（分块：音频卡按每块的 @range 截取），实际是「{header.group(2) or ''}」")
             audio_window = True
     if not blocks:
         raise ValueError(
@@ -454,7 +587,7 @@ def parse_shot_prompts(text: str) -> list[Shot]:
         for key in SOUND_KEYS & set(directives):
             value = str(directives[key] or "").strip().lower()
             if value not in SOUND_VALUES:
-                raise ValueError(f"第 {sentinel_line} 行：@sound 只能写 原声 或 生成（source / generated），实际是「{directives[key]}」")
+                raise ValueError(f"第 {sentinel_line} 行：@sound 只能写 source 或 generated（原声 / 生成），实际是「{directives[key]}」")
             sound = SOUND_VALUES[value]
         video = True
         for key in VIDEO_KEYS & set(directives):
@@ -468,21 +601,31 @@ def parse_shot_prompts(text: str) -> list[Shot]:
             if not value.isdigit() or not 1 <= int(value) <= 9:
                 raise ValueError(f"第 {sentinel_line} 行：@first 要写首帧图的图卡编号 1–9，例如 @first 4，实际是「{directives[key]}」")
             first_picture = int(value)
+        aspect = header_aspect
+        for key in ASPECT_KEYS & set(directives):
+            aspect = _aspect(directives[key], f"第 {sentinel_line} 行：分镜 {index}")
         face_blur = ""
         for key in FACE_BLUR_KEYS & set(directives):
             face_blur = _face_blur(directives[key], f"第 {sentinel_line} 行")
+        blur_people = header_people
+        for key in BLUR_PEOPLE_KEYS & set(directives):
+            blur_people = _blur_people(directives[key], f"第 {sentinel_line} 行：分镜 {index}")
+        mode = header_mode
+        for key in MODE_KEYS & set(directives):
+            mode = _mode_value(directives[key], f"第 {sentinel_line} 行：分镜 {index}")
         segmentation = header_segmentation or ()
         for key in SEGMENTATION_KEYS & set(directives):
             segmentation = tuple(_segmentation_value(directives[key], f"第 {sentinel_line} 行：分镜 {index}").items())
         unknown = (set(directives) - {"range", "pictures", "continue", "split"} - PASSTHROUGH_KEYS - SOUND_KEYS
-                   - VIDEO_KEYS - FIRST_KEYS - FACE_BLUR_KEYS - SEGMENTATION_KEYS)
+                   - VIDEO_KEYS - FIRST_KEYS - FACE_BLUR_KEYS - BLUR_PEOPLE_KEYS - ASPECT_KEYS - SEGMENTATION_KEYS - MODE_KEYS)
         if unknown:
             LOGGER.warning("Easy H3 shot prompts: 第 %d 行忽略未知字段 %s", sentinel_line, ", ".join(sorted(unknown)))
         shots.append(Shot(index=index, start=start, end=end, prompt=normalize_prompt_tags(prompt, index),
                           pictures=pictures, pictures_explicit=pictures_explicit, continues=continues,
                           passthrough=passthrough, splits=splits, sound=sound, hold=hold, video=video,
                           first_picture=first_picture, audio_window=audio_window, face_blur=face_blur,
-                          segmentation=segmentation))
+                          blur_people=blur_people, aspect=aspect,
+                          segmentation=segmentation, mode=mode))
         previous_end = end
         expected += 1
     LOGGER.info("Easy H3 shot prompts: %d 个分镜，共 %.2f 秒%s%s", len(shots), sum(shot.seconds for shot in shots),
@@ -493,8 +636,11 @@ def parse_shot_prompts(text: str) -> list[Shot]:
 
 def _hold_seconds(value: str, line_number: int) -> float:
     """@hold 26.5 / @hold 00:26.500 in the md header."""
+    text = str(value or "").strip().lower()
+    if not text.endswith("ms"):
+        text = text.removesuffix("秒").removesuffix("s").strip()
     try:
-        seconds = time_seconds(value)
+        seconds = time_seconds(text)
     except ValueError:
         raise ValueError(f"第 {line_number} 行：@hold 要写定格秒数，例如 @hold 26.5，实际是「{value or ''}」")
     if not 0 <= seconds <= MAX_HOLD_SECONDS:
@@ -1072,9 +1218,15 @@ def shot_payload(shot: Shot, total: int, markdown_fingerprint: str, series: str,
             "first_picture": int(shot.first_picture),
             # @audio 分块: Setup cuts every audio card to this block's range.
             "audio_window": bool(shot.audio_window),
-            # @脸部模糊: this block's source-face blur for H3 动作迁移预处理 ("" = the node's setting).
+            # @face_blur: this block's source-face blur for H3 动作迁移预处理 ("" = the node's setting).
             "face_blur": shot.face_blur,
-            # @分段: Motion Segment's 分段方式 自动 follows it (None = not written: 不分段).
+            # @aspect: Setup's aspect ratio for this block ("" = Setup's own setting).
+            "aspect": shot.aspect,
+            # @blur_people: [film frame, x, y] of every person to blur ([] = the largest face of each frame).
+            "blur_people": [[int(round(seconds * FPS)), x, y] for seconds, x, y in shot.blur_people],
+            # @mode: this block's mode for H3 动作迁移预处理 set to 自动 ("" = not written: 关闭).
+            "mode": shot.mode,
+            # @segment: Motion Segment's 分段方式 自动 follows it (None = not written: 不分段).
             "segmentation": dict(shot.segmentation) if shot.segmentation else None,
             # Time-tagged dialogue lines as film-time frames: context windows keep their overlaps in the pauses.
             "speech": [[int(round(start * FPS)), int(round(end * FPS))]
@@ -1109,12 +1261,13 @@ class FeiHouEasyH3ShotPrompts:
                     "把 skills 生成的分镜 md 拖到节点上、点「选择 md 文件」，或直接粘贴全文。"
                     "RunningHub 上的运行只用这里的全文（服务器读不到你电脑上的文件）。"}),
 
-                "start": ([START_AUTO, START_RESTART, START_MANUAL], {"default": START_AUTO, "tooltip":
-                    "自动续接：从下面「镜号」那一块往后跑，每跑完一块镜号自动 +1。"
-                    "从头开始：从第 1 块重跑全片，镜号跟着 +1。手动设置：只跑镜号里列出的块（例如 6,9 或 3-5），镜号保持不变。"}),
-                "shot_numbers": ("STRING", {"default": "0", "tooltip":
-                    "镜号：0 = 全片。左右箭头 ±1、按住左右拖动可调；单击可输入，手动设置时可填 6,9 或 3-5。"
-                    "自动续接时每跑完一块自动改成下一块，整片跑完回到 0。"}),
+                "start": (START_CHOICES, {"default": START_SEQUENCE, "tooltip":
+                    "顺序生成：按顺序跑全片，看下面的镜号。手动设置：只跑镜号里列出的块（例如 6,9 或 3-5），镜号保持不变。"}),
+                "shot_numbers": ("STRING", {"default": "1", "tooltip":
+                    "顺序生成时：镜号跟着进度走（1/4、2/4…）。不动它，中断后再运行就接着跑，最后照样拼成全片；"
+                    "改成 1 = 全片重跑；改成别的块号 = 从那一块重新开始（不接上一块的结尾），跑完和前面已跑好的块一起拼成全片；"
+                    "0 = 自动：每次运行都从第 1 块开始，显示 1/4（自动）、2/4（自动）…。整片跑完镜号回到 1（自动模式保持 0）。"
+                    "手动设置时填要跑的块，例如 6,9 或 3-5，0 = 全片。左右箭头 ±1、按住左右拖动可调，单击可输入。"}),
 
             },
             "hidden": {"prompt": "PROMPT", "unique_id": "UNIQUE_ID"},
@@ -1124,8 +1277,15 @@ class FeiHouEasyH3ShotPrompts:
     def IS_CHANGED(cls, **kwargs):
         return float("nan")  # the current shot advances after every block
 
+    @classmethod
+    def VALIDATE_INPUTS(cls, start=START_SEQUENCE):
+        # Workflows saved with 自动续接 / 从头开始 still run (as 顺序生成).
+        if str(start) not in START_CHOICES and str(start) not in LEGACY_STARTS:
+            return f"start 只能是 {' / '.join(START_CHOICES)}：{start!r}"
+        return True
+
     @staticmethod
-    def load(prompt_text="", md_path="", start=START_AUTO, shot_numbers="", prompt=None, unique_id=None):
+    def load(prompt_text="", md_path="", start=START_SEQUENCE, shot_numbers="", prompt=None, unique_id=None):
         text = str(prompt_text or "")
         if not text.strip():
             raise ValueError("分镜提示词：还没有内容。把 md 拖到节点上、点「选择 md 文件」，或者把 md 全文粘贴到提示词框。")
@@ -1133,40 +1293,52 @@ class FeiHouEasyH3ShotPrompts:
         markdown_fingerprint = fingerprint(text)
         total = len(shots)
         state = read_state(markdown_fingerprint)
-        picks = parse_picks(shot_numbers, total) if str(start) == START_MANUAL else []
+        start = start_mode(start)
+        picks = parse_picks(shot_numbers, total) if start == START_MANUAL else []
+        fresh = False  # start this block without the previous block's tail
+        resumable = state is not None and not state.get("done")
 
-        if start == START_RESTART:
-            block, series = 1, new_series(markdown_fingerprint)
-        elif start == START_MANUAL:
+        if start == START_MANUAL:
             if not picks:
                 picks = list(range(1, total + 1))  # 镜号 0 = the whole film
-            resumable = (state is not None and not state.get("done")
-                         and [int(item) for item in (state.get("picks") or [])] == picks)
+            resumable = (resumable and [int(item) for item in (state.get("picks") or [])] == picks)
             block = max(1, min(total, int(state.get("block") or picks[0]))) if resumable else picks[0]
             series = ((str(state.get("series") or "") if resumable else "")
                       or new_series(markdown_fingerprint))
         else:
-            resumable = state is not None and not state.get("done")
-            if resumable:
-                # The frontend switches to 自动续接 while it queues the remaining
-                # blocks, so the pick list of the running batch has to survive.
-                picks = [int(item) for item in (state.get("picks") or [])]
-            wanted = parse_picks(shot_numbers, total)
-            if wanted:
-                # The 镜号 widget doubles as "jump to this block".
-                block = wanted[0]
-                series = (str((state or {}).get("series") or "") if resumable else "")
+            text = str(shot_numbers or "").strip()
+            continued = AUTO_CONTINUE.match(text)
+            current = max(1, min(total, int(state.get("block") or 1))) if resumable else 0
+            if continued:
+                wanted = int(continued.group(1))         # 自动: the film's next run
+            elif not text or re.fullmatch(r"0+", text):
+                wanted = 0                                # 自动: every run starts the film over
             else:
-                block = max(1, min(total, int(state.get("block") or 1))) if resumable else 1
-            # A finished film starts over as a new series: reusing the old name
-            # would overwrite the videos and manifest V2 already joined.
-            series = (str(state.get("series") or "") if resumable else "") or new_series(markdown_fingerprint)
-            if resumable:
-                LOGGER.info("Easy H3 shot prompts: 从分镜 %d/%d 继续（series %s）", block, total, series)
+                wanted = parse_picks(text, total)[0]
+            if continued and resumable and wanted == current:
+                block, series = current, str(state.get("series") or "")
+                LOGGER.info("Easy H3 shot prompts: 顺序生成（自动），接着跑分镜 %d/%d（series %s）", block, total, series)
+            elif wanted and resumable and wanted == current:
+                # 镜号 untouched: the interrupted block continues, the film still joins at the end.
+                block, series = current, str(state.get("series") or "")
+                LOGGER.info("Easy H3 shot prompts: 顺序生成，从分镜 %d/%d 继续（series %s）", block, total, series)
+            elif wanted <= 1:
+                block, series = 1, new_series(markdown_fingerprint)
+                LOGGER.info("Easy H3 shot prompts: 顺序生成%s，从第 1 块开始跑全片", "（自动）" if not wanted else "")
+            else:
+                # Another block: start there afresh; the film keeps its series, so the
+                # blocks already made still join with these into the whole film.
+                block, fresh = wanted, True
+                series = (str(state.get("series") or "") if state else "") or new_series(markdown_fingerprint)
+                LOGGER.info("Easy H3 shot prompts: 顺序生成，从分镜 %d/%d 重新开始（不接上一块的结尾，series %s）",
+                            block, total, series)
+            picks = []
 
         write_state(markdown_fingerprint, {"block": block, "total": total, "series": series,
                                            "done": False, "picks": picks})
         shot = shots[block - 1]
+        if fresh and shot.continues:
+            shot = replace(shot, continues=False)
         # The film ends at its last block, a filtered run at its last pick.
         is_last = (block >= max(picks)) if picks else (block >= total)
         payload = shot_payload(shot, total, markdown_fingerprint, series, is_last, picks)
@@ -1185,8 +1357,9 @@ class FeiHouEasyH3ShotPrompts:
         ui = {"feihou_rh_shot": [{
             "index": block, "total": total, "series": series, "prompt": shot.prompt,
             "next": payload.get("next_index"),
-            "range": payload["range"], "seconds": shot.seconds,
-            "pictures": list(shot.pictures), "continue": bool(shot.continues),
+            "range": payload["range"], "seconds": shot.seconds, "hold": float(shot.hold),
+            "pictures": list(shot.pictures), "continue": bool(shot.continues), "video": shot.video is not False,
             "standalone": standalone, "fingerprint": markdown_fingerprint, "is_last": bool(is_last),
+            "aspect": shot.aspect,
         }]}
         return {"ui": ui, "result": (payload,)}
