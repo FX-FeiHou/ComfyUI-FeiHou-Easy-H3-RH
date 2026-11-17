@@ -4571,6 +4571,11 @@ class FeiHouEasyH3:
         hold = int(production_shot["motion"].get("hold_frames") or 0) if motion_shot else 0
         if motion_shot and int(production_shot["motion"].get("frames") or 0) > 0:
             window = (int(production_shot["motion"].get("start_frame") or 0), int(production_shot["motion"]["frames"]))
+            # @transition crossfade: the block is rendered that many frames early (not with @continue).
+            lead = 0 if production_shot["motion"].get("continue") or not motion_deferred else min(
+                int(production_shot["motion"].get("crossfade") or 0), window[0])
+            if lead:
+                window = (window[0] - lead, window[1] + lead)
         head = None
         if not motion_shot and _duration_alignment(audio_duration_auto) == "off":
             # Setup encodes at most as many reference frames as it generates

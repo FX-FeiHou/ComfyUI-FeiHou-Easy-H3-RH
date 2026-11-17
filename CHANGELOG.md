@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.4.21
+
+- Ported from the standard edition (v1.4.33):
+  - Samplers: Motion Segment · RH and 1st Sample Enhancer · RH default to euler, also for two-pass, and dual_clock_euler is no longer offered where ComfyUI samples H3 audio and video natively (ModelSamplingAV). With dual_clock_euler, two-pass talk blocks (`@sound generated`) got a steady music-like bed under the speech; euler is clean. A saved dual_clock_euler opens as euler in the browser and runs as euler on the server. On ComfyUI builds without native H3 sampling it is still the only choice.
+  - Shot Prompts · RH, 镜号 in 顺序生成: 0 is no longer a separate 自动 mode. 0 or 1 runs the whole film again from block 1, and once the run is going 镜号 follows it (1/4, 2/4 …), so an interrupted run queued again with 镜号 untouched continues where it stopped. A number the user changes starts that block from its first segment, even when it is the block the interrupted run stopped in (sent as `N!`). Runs saved or queued by an older version as `0@N` still continue at block N.
+  - H3动作迁移预处理 · RH: the Remake LoRA choice (`remake_lora`) is gone; the node no longer loads the Viggle Remake swap LoRA itself, on the 1st or the 2nd pass. Put it in the workflow's LoRA list (bypass, strength 1). Having it in both places loaded it twice. Saved workflows open with their mode, face-blur settings and 人脸识别模型 kept. The LoRA list applies to every block, so a talk block in the same film runs with it too.
+  - New shot-md directive `@transition crossfade,frames=12` (`@转场 叠化,帧数=12`), written in the block that should fade in from the one before it; `@transition cut` (the default) keeps the hard cut. The previous block holds back its last `frames` frames (picture and sound), this block is rendered that many frames before its `@range`, and Motion Collect · RH blends the two, so the joined film keeps its length. `frames` is 2–48 (default 12). Not with `@continue` in the same block; ignored on the first block and on `@passthrough` blocks; a block run on its own without the held frames falls back to a hard cut. Motion workflow only; Sample Enhancer graphs keep the hard cut.
+- Not ported: locating a dropped md's path on disk (the RH edition has no md_path; RunningHub cannot read local files).
+- RH platform auth, billing and media transfer are unchanged.
+
 ## v1.4.20
 
 - Ported from the standard edition:

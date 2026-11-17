@@ -363,21 +363,19 @@ function firstShotNumber(value) {
   return match ? Number(match[0]) : 0;
 }
 
-// 顺序生成's 自动 mode: 镜号 0 (or 0@N while the film's next run is queued).
-function isAutoShotNumber(value) {
+// 顺序生成: 镜号 0 (or empty) = run the whole film again from block 1. Once the
+// run is going, 镜号 follows the progress like any number.
+function isZeroShotNumber(value) {
   const text = String(value ?? "").trim();
-  return text === "" || /^0+$/.test(text) || /^0@\d+$/.test(text);
+  return text === "" || /^0+$/.test(text);
 }
 
 function shotNumberLabel(value, total, node) {
   const text = String(value ?? "").trim();
-  const manual = startValue(node) === START_MANUAL;
-  if (isAutoShotNumber(text)) {
-    if (manual) return "0（全片）";
-    const running = node?.__h3AutoBlock || Number(text.split("@")[1] || 0);
-    return running && total ? `${running}/${total}（自动）` : "0（自动）";
-  }
-  return /^\d+$/.test(text) && total ? `${Number(text)}/${total}` : text;
+  if (isZeroShotNumber(text)) return startValue(node) === START_MANUAL ? "0（全片）" : "0（全片重跑）";
+  const queued = text.match(/^0@(\d+)$/);   // saved by an older version: continue at that block
+  const number = queued ? queued[1] : text;
+  return /^\d+$/.test(number) && total ? `${Number(number)}/${total}` : text;
 }
 
 function startValue(node) {
@@ -394,7 +392,11 @@ function migrateStart(node) {
   }
 }
 
+// The user changed 镜号 (arrows, drag, typing): the run starts at that block
+// afresh, even when it is the block an interrupted run stopped in. Sent as "N!"
+// (see serializeShotNumber); progress updates clear the mark.
 function setShotNumber(node, widget, value) {
+  widget.__h3Edited = true;
   widget.value = String(value);
   if (widget._state) widget._state.value = widget.value;
   node.setDirtyCanvas?.(true, true);
@@ -407,8 +409,8 @@ function stepShotNumber(node, widget, number) {
 }
 
 function promptShotNumber(node, widget, event) {
-  app.canvas.prompt("镜号（顺序生成：1 = 全片重跑，其他块号 = 从那块开始，0 = 自动每次从头；手动设置可填 6,9 或 3-5）",
-    isAutoShotNumber(widget.value) ? "0" : widget.value, (input) => {
+  app.canvas.prompt("镜号（顺序生成：不改 = 接着跑，0 或 1 = 全片重跑，其他块号 = 从那块开始往下跑；手动设置可填 6,9 或 3-5）",
+    isZeroShotNumber(widget.value) ? "0" : widget.value, (input) => {
     const text = String(input ?? "").trim();
     if (!/^[\d\s,，;；~-]*$/.test(text)) {
       notify("warn", `镜号只能填数字、6,9 或 3-5，收到「${text}」`);
@@ -416,6 +418,12 @@ function promptShotNumber(node, widget, event) {
     }
     setShotNumber(node, widget, text || "0");
   }, event);
+}
+
+// What the run gets: "N!" when the user changed 镜号 in 顺序生成, else the value.
+function serializeShotNumber(node, widget) {
+  const text = String(widget.value ?? "").trim();
+  return widget.__h3Edited && startValue(node) !== START_MANUAL && /^\d+$/.test(text) ? `${text}!` : widget.value;
 }
 
 function installShotNumberWidget(node) {
@@ -489,6 +497,9 @@ function installShotNumberWidget(node) {
     computeSize(width) {
       return [width, LiteGraph.NODE_WIDGET_HEIGHT || 20];
     },
+    serializeValue(owner) {
+      return serializeShotNumber(owner || node, this);
+    },
   });
   // addCustomWidget appends: put it into the old slot so widgets_values keep their order.
   const widget = node.widgets.includes(added) ? added : node.widgets[node.widgets.length - 1];
@@ -542,17 +553,8 @@ function setShotProgress(info, nodeId) {
   // state remembers which pick runs next, so the list stays as typed.
   const startWidget = shotNode.widgets.find((widget) => widget?.name === "start");
   if (startWidget?.value === START_MANUAL) return;
-  if (isAutoShotNumber(numberWidget.value)) {
-    // 自动: 镜号 stays 0 (the next run the user queues starts over); only the display follows.
-    shotNode.__h3AutoBlock = info.shot_done ? null
-      : Math.round(Number("shot_done" in info ? info.shot_next : info.block)) || null;
-    if (numberWidget.value !== "0") {
-      numberWidget.value = "0";
-      if (numberWidget._state) numberWidget._state.value = "0";
-    }
-    shotNode.setDirtyCanvas?.(true, true);
-    return;
-  }
+  // 顺序生成 (also after a 0 = 全片重跑 start): 镜号 follows the film, so an
+  // interrupted run queued again unchanged continues where it stopped.
   let next;
   if (!("shot_done" in info)) {
     // A segment inside the block finished: the next run continues this block,
@@ -565,6 +567,7 @@ function setShotProgress(info, nodeId) {
       ? String(Math.round(Number(info.shot_next))) : numberWidget.value;
   }
   numberWidget.value = next;
+  numberWidget.__h3Edited = false;
   if (numberWidget._state) numberWidget._state.value = next;
   shotNode.setDirtyCanvas?.(true, true);
 }
@@ -905,26 +908,17 @@ function installCollectLayout(nodeType) {
   };
 }
 
-// Queue the film's next run from this graph.  In 自动 mode 镜号 is 0@N for that
-// one run only, so the server continues the film instead of starting it over.
+// Queue the film's next run from this graph: 镜号 names the block to continue
+// (a 0 = 全片重跑 start would otherwise start the film over again).
 function queueNextRun(shot, block) {
   const widget = shot?.widgets?.find((item) => item?.name === "shot_numbers");
-  const auto = widget && isAutoShotNumber(widget.value) && startValue(shot) !== START_MANUAL && block;
-  if (auto) {
-    widget.value = `0@${Math.round(Number(block))}`;
+  if (widget && startValue(shot) !== START_MANUAL && block) {
+    widget.value = String(Math.round(Number(block)));
+    widget.__h3Edited = false;
     if (widget._state) widget._state.value = widget.value;
+    shot.setDirtyCanvas?.(true, true);
   }
-  setTimeout(async () => {
-    try {
-      await app.queuePrompt(0, 1);
-    } finally {
-      if (auto) {
-        widget.value = "0";
-        if (widget._state) widget._state.value = "0";
-        shot.setDirtyCanvas?.(true, true);
-      }
-    }
-  }, 0);
+  setTimeout(() => void app.queuePrompt(0, 1), 0);
 }
 
 function showStandaloneProgress(info) {

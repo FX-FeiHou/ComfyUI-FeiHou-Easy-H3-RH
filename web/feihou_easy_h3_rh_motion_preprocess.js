@@ -1,6 +1,5 @@
 // H3 动作迁移预处理: every option stays visible; 模式 lights up its own and
-// greys out the rest (关闭 / 自动: all grey; 人物替换: the Remake LoRA and the
-// face blur, whose level and detector also follow the face-blur switch).
+// greys out the rest (关闭 / 自动: all grey; 人物替换: the face blur, whose level and detector also follow the face-blur switch).
 // Migrates older saves and shows the blurred preview video.
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
@@ -9,13 +8,14 @@ const NODE = "FeiHouEasyH3RHMotionPreprocess";
 const MODE = "mode";
 const TOGGLE = "face_blur_on";
 const DEPENDENT = ["face_blur", "face_detector", "face_recognizer"];
-const SWAP_WIDGETS = ["remake_lora", TOGGLE, ...DEPENDENT];
+const SWAP_WIDGETS = [TOGGLE, ...DEPENDENT];
 const SWAP = "人物替换";
 const OFF = "关闭";
 // widgets_values before 模式: [remake, face_blur_on, face_blur, face_detector] (the RH edition
 // also had face_recognizer there);
 // then the 模式 layouts that still had 动作迁移 (guide, TARA strength, its LoRAs, LoRA strength)
-// or the experimental 动作引导 (its step count).
+// or the experimental 动作引导 (its step count); then the layout with the Remake LoRA choice
+// (the LoRA now comes from the workflow's LoRA list).
 const LEGACY = ["remake", "face_blur_on", "face_blur", "face_detector", "face_recognizer"];
 const OLD_LAYOUTS = [
   ["mode", "motion_guide", "tara_strength", "face_blur_on", "face_blur", "face_detector"],
@@ -25,6 +25,7 @@ const OLD_LAYOUTS = [
   ["mode", "motion_guide", "tara_strength", "tara_lora", "latent_lora", "motion_lora_strength", "remake_lora",
     "face_blur_on", "face_blur", "face_detector"],
   ["mode", "remake_lora", "face_blur_on", "face_blur", "face_detector", "guide_steps"],
+  ["mode", "remake_lora", "face_blur_on", "face_blur", "face_detector", "face_recognizer"],
 ];
 
 const widgetOf = (node, name) => node.widgets?.find((w) => w.name === name);
@@ -39,7 +40,7 @@ function setDisabled(widget, disabled) {
 }
 
 function enabledFor(mode, faceBlurOn) {
-  if (mode === SWAP) return new Set(faceBlurOn ? SWAP_WIDGETS : ["remake_lora", TOGGLE]);
+  if (mode === SWAP) return new Set(faceBlurOn ? SWAP_WIDGETS : [TOGGLE]);
   return new Set();   // 关闭 / 自动: the md or nothing decides
 }
 
@@ -75,16 +76,6 @@ function setChoice(node, name, value) {
   if (widget && (widget.options?.values || []).includes(value)) setValue(widget, value);
 }
 
-function defaultLora(widget, name) {
-  const base = (value) => String(value).replace(/\\/g, "/").split("/").pop().toLowerCase();
-  const values = widget.options?.values || [];
-  const found = values.filter((value) => {
-    const file = base(value);
-    return name === "remake_lora" && file.includes("remake_swap");
-  });
-  return found.length ? found.sort().at(-1) : "无";
-}
-
 // Older saves are loaded by position into the current widgets: put their values back by name.
 function migrate(node, info) {
   const values = info?.widgets_values;
@@ -94,7 +85,7 @@ function migrate(node, info) {
     old = Object.fromEntries(LEGACY.map((name, index) => [name, values[index]]));
     old.mode = old.remake ? SWAP : OFF;
   } else {
-    // The guide_steps layout has a number in its 6th slot; today's 6th slot is 人脸识别模型 (text).
+    // Two 6-value layouts: the guide_steps one has a number in its 6th slot, the Remake LoRA one 人脸识别模型 (text).
     const layout = OLD_LAYOUTS.find((names) => names.length === values.length
       && typeof values[names.indexOf(TOGGLE)] === "boolean"
       && (!names.includes("guide_steps") || typeof values[names.indexOf("guide_steps")] === "number"));
@@ -103,13 +94,6 @@ function migrate(node, info) {
   if (!old) return false;
   // 动作迁移 was removed: such a save opens as 关闭.
   setChoice(node, MODE, old.mode === SWAP || old.mode === "自动" ? old.mode : OFF);
-  for (const name of ["remake_lora"]) {
-    // Positional loading may have put another field there: the saved choice, else the LoRA by file name, else 无.
-    const widget = widgetOf(node, name);
-    if (!widget) continue;
-    if ((widget.options?.values || []).includes(old[name])) setValue(widget, old[name]);
-    else setValue(widget, defaultLora(widget, name));
-  }
   if (typeof old.face_blur_on === "boolean") setValue(widgetOf(node, TOGGLE), old.face_blur_on);
   setChoice(node, "face_blur", old.face_blur);
   // The detector list may name the same file with or without its folder (bbox\face_yolov8m.pt / face_yolov8m.pt).

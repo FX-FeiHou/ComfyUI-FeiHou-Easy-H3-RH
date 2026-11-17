@@ -62,9 +62,9 @@ MAX_HOLD_SECONDS = 600.0
 OUTPUT_SUBDIR = "feihou_h3_rh_motion"
 STATE_VERSION = 1
 
-# 顺序生成: blocks in order; 镜号 1+ follows the progress (an untouched 镜号 resumes,
-# 1 starts the film over, another number starts there afresh), 0 = 自动 starts the
-# film over on every run.  手动设置: only the listed blocks.
+# 顺序生成: blocks in order; 镜号 follows the progress (an untouched 镜号 resumes,
+# 0 or 1 starts the film over, another number starts there afresh).  手动设置: only
+# the listed blocks.
 START_SEQUENCE = "顺序生成"
 START_MANUAL = "手动设置"
 START_CHOICES = [START_SEQUENCE, START_MANUAL]
@@ -72,8 +72,7 @@ START_CHOICES = [START_SEQUENCE, START_MANUAL]
 START_AUTO = "自动续接"
 START_RESTART = "从头开始"
 LEGACY_STARTS = {START_AUTO: START_SEQUENCE, START_RESTART: START_SEQUENCE}
-# 镜号 of the next run of a film in 自动 (0) mode, queued by the server or the browser:
-# "0@3" = continue at block 3 (a plain 0 typed by the user starts the film over).
+# Queued or saved by an older version (its 自动 mode): "0@3" = continue at block 3.
 AUTO_CONTINUE = re.compile(r"^0@(\d+)$")
 # @aspect 9:16: the canvas aspect ratio for Setup (overrides its aspect_ratio).
 ASPECT_KEYS = {"aspect", "aspect_ratio", "画幅", "画幅比例", "比例"}
@@ -87,9 +86,8 @@ def start_mode(value) -> str:
 
 
 def next_run_numbers(current, block: int) -> str:
-    """镜号 of the queued next run: the block number, or 0@block in 自动 mode."""
-    text = str(current or "").strip()
-    return f"0@{int(block)}" if (not text or re.fullmatch(r"0+", text) or AUTO_CONTINUE.match(text)) else str(int(block))
+    """镜号 of the queued next run: the block it continues (also after a 0 = 全片重跑 start)."""
+    return str(int(block))
 
 # ``===== FEIHOU_SHOT 03 =====`` (case-insensitive, at least one '=' on each side).
 SENTINEL = re.compile(r"^=+\s*FEIHOU_SHOT\s+(\d+)\s*=+\s*$", re.IGNORECASE)
@@ -118,6 +116,16 @@ AUDIO_WINDOW_ON = {"分块", "按分块", "跟随分镜", "跟随分块", "windo
 # @first 4: picture card 4 is the block's first frame (keyframe at frame 0), so a
 # block run on its own still starts from the right person when no previous tail exists.
 FIRST_KEYS = {"first", "首帧", "首帧图"}
+# @transition crossfade,frames=12 (@转场 叠化,帧数=12): this block opens with a cross-fade from
+# the previous block instead of a hard cut.  The previous block holds back its last `frames`
+# frames, this block renders the same number before its @range, and Motion Collect blends
+# the two, so the film keeps its length.  `@transition cut` (硬切) is the default.
+TRANSITION_KEYS = {"transition", "转场", "过渡"}
+TRANSITION_CROSSFADE = {"crossfade", "dissolve", "fade", "叠化", "溶解", "交叉淡化"}
+TRANSITION_CUT = {"cut", "none", "off", "硬切", "无", "关"}
+TRANSITION_FRAME_NAMES = {"frames", "length", "帧数", "帧", "长度"}
+CROSSFADE_DEFAULT_FRAMES = 12
+CROSSFADE_MIN_FRAMES, CROSSFADE_MAX_FRAMES = 2, 48
 # @face_blur 3 / auto / off (@脸部模糊 3 / 自动 / 关; H3 动作迁移预处理): this block's source-face blur level,
 # over the preprocess node's own setting.
 FACE_BLUR_KEYS = {"face_blur", "脸部模糊", "模糊", "blur", "faceblur"}
@@ -157,7 +165,7 @@ CONTEXT_CHUNK_WHOLE = {CONTEXT_SEGMENT_WHOLE, "整块", "all", "whole"}
 # Every directive key (English or Chinese) → its English key.
 KEY_ALIASES = {alias: canonical for canonical, aliases in (
     ("passthrough", PASSTHROUGH_KEYS), ("sound", SOUND_KEYS), ("hold", HOLD_KEYS), ("video", VIDEO_KEYS),
-    ("audio", AUDIO_WINDOW_KEYS), ("first", FIRST_KEYS), ("face_blur", FACE_BLUR_KEYS), ("blur_people", BLUR_PEOPLE_KEYS), ("aspect", ASPECT_KEYS), ("mode", MODE_KEYS),
+    ("audio", AUDIO_WINDOW_KEYS), ("first", FIRST_KEYS), ("transition", TRANSITION_KEYS), ("face_blur", FACE_BLUR_KEYS), ("blur_people", BLUR_PEOPLE_KEYS), ("aspect", ASPECT_KEYS), ("mode", MODE_KEYS),
     ("segment", SEGMENTATION_KEYS)) for alias in aliases}
 
 
@@ -183,6 +191,8 @@ class Shot:
     video: bool = True
     # @first N: picture card N anchors the block's first frame (0 = none).
     first_picture: int = 0
+    # @transition crossfade: frames of cross-fade from the previous block (0 = hard cut).
+    crossfade: int = 0
     # @audio 分块 (md header): audio cards are cut to this block's @range.
     audio_window: bool = False
     # @face_blur: "" = not written (the preprocess node decides), "off", "auto" or "1"-"5".
@@ -360,6 +370,37 @@ SEG_USAGE = ("例如 @segment context,window=192,overlap=39,chunk=30、@segment 
 
 def _seg_number(text: str, unit: str) -> str:
     return text.strip().lower().removesuffix(unit).removesuffix("s").strip()
+
+
+def _transition_value(value: str, where: str) -> int:
+    """@transition crossfade[,frames=12] → cross-fade frames; @transition cut → 0."""
+    parts = [part for part in VALUE_SPLIT.split(_equals(value)) if part]
+    usage = "例如 @transition crossfade,frames=12 或 @transition cut"
+    if not parts:
+        raise ValueError(f"{where}：@transition 要写 crossfade 或 cut（{usage}）")
+    kind = parts[0].lower()
+    if kind in TRANSITION_CUT:
+        if parts[1:]:
+            raise ValueError(f"{where}：@transition cut 后面不用写参数，实际是「{value}」")
+        return 0
+    if kind not in TRANSITION_CROSSFADE:
+        raise ValueError(f"{where}：@transition 只能写 crossfade（叠化）或 cut（硬切）（{usage}），实际是「{value}」")
+    frames = CROSSFADE_DEFAULT_FRAMES
+    rest = parts[1:]
+    if len(rest) > 1:
+        raise ValueError(f"{where}：@transition crossfade 只有 frames 一个参数（{usage}），实际是「{value}」")
+    if rest:
+        name, sep, raw = rest[0].partition("=")
+        if sep and name.strip().lower() not in TRANSITION_FRAME_NAMES:
+            raise ValueError(f"{where}：@transition crossfade 没有「{name}」这个参数，只能写 frames（{usage}）")
+        text = (raw if sep else name).strip().removesuffix("帧")
+        if not text.isdigit():
+            raise ValueError(f"{where}：@transition crossfade 的 frames 要写整数帧数，实际是「{value}」")
+        frames = int(text)
+    if not CROSSFADE_MIN_FRAMES <= frames <= CROSSFADE_MAX_FRAMES:
+        raise ValueError(f"{where}：叠化帧数要在 {CROSSFADE_MIN_FRAMES}～{CROSSFADE_MAX_FRAMES} 之间"
+                         f"（24fps 下约 0.1～2 秒），实际是 {frames}")
+    return frames
 
 
 def _segmentation_value(value: str, where: str) -> dict:
@@ -601,6 +642,20 @@ def parse_shot_prompts(text: str) -> list[Shot]:
             if not value.isdigit() or not 1 <= int(value) <= 9:
                 raise ValueError(f"第 {sentinel_line} 行：@first 要写首帧图的图卡编号 1–9，例如 @first 4，实际是「{directives[key]}」")
             first_picture = int(value)
+        crossfade = 0
+        for key in TRANSITION_KEYS & set(directives):
+            crossfade = _transition_value(directives[key], f"第 {sentinel_line} 行：分镜 {index}")
+        if crossfade and continues:
+            raise ValueError(f"第 {sentinel_line} 行：分镜 {index} 同时写了 @continue 和 @transition crossfade，"
+                             "接续和叠化只能二选一")
+        if crossfade and not shots:
+            LOGGER.warning("Easy H3 shot prompts: 第 %d 行的 @transition crossfade 写在第一块，前面没有可叠化的块，已忽略",
+                           sentinel_line)
+            crossfade = 0
+        if crossfade and passthrough:
+            LOGGER.warning("Easy H3 shot prompts: 第 %d 行：原片直出块不支持 @transition crossfade，已按硬切处理",
+                           sentinel_line)
+            crossfade = 0
         aspect = header_aspect
         for key in ASPECT_KEYS & set(directives):
             aspect = _aspect(directives[key], f"第 {sentinel_line} 行：分镜 {index}")
@@ -617,13 +672,13 @@ def parse_shot_prompts(text: str) -> list[Shot]:
         for key in SEGMENTATION_KEYS & set(directives):
             segmentation = tuple(_segmentation_value(directives[key], f"第 {sentinel_line} 行：分镜 {index}").items())
         unknown = (set(directives) - {"range", "pictures", "continue", "split"} - PASSTHROUGH_KEYS - SOUND_KEYS
-                   - VIDEO_KEYS - FIRST_KEYS - FACE_BLUR_KEYS - BLUR_PEOPLE_KEYS - ASPECT_KEYS - SEGMENTATION_KEYS - MODE_KEYS)
+                   - VIDEO_KEYS - FIRST_KEYS - TRANSITION_KEYS - FACE_BLUR_KEYS - BLUR_PEOPLE_KEYS - ASPECT_KEYS - SEGMENTATION_KEYS - MODE_KEYS)
         if unknown:
             LOGGER.warning("Easy H3 shot prompts: 第 %d 行忽略未知字段 %s", sentinel_line, ", ".join(sorted(unknown)))
         shots.append(Shot(index=index, start=start, end=end, prompt=normalize_prompt_tags(prompt, index),
                           pictures=pictures, pictures_explicit=pictures_explicit, continues=continues,
                           passthrough=passthrough, splits=splits, sound=sound, hold=hold, video=video,
-                          first_picture=first_picture, audio_window=audio_window, face_blur=face_blur,
+                          first_picture=first_picture, crossfade=crossfade, audio_window=audio_window, face_blur=face_blur,
                           blur_people=blur_people, aspect=aspect,
                           segmentation=segmentation, mode=mode))
         previous_end = end
@@ -1110,7 +1165,10 @@ def standalone_payload(payload: dict[str, Any], shot: "Shot") -> dict[str, Any]:
     if shot.passthrough:
         raise ValueError(f"分镜 {shot.index} 写了 @passthrough（原片直出），只能用动作迁移工作流"
                          "（「动作迁移分段」+「动作迁移收束」）跑。")
-    payload = {**payload, "motion": {**payload["motion"], "segment": False},
+    if shot.crossfade:
+        LOGGER.warning("Easy H3 shot prompts: 分镜 %d 的 @transition crossfade 只在动作迁移工作流（动作迁移分段 + 收束）里生效，"
+                       "采样增强工作流里按硬切处理", shot.index)
+    payload = {**payload, "motion": {**payload["motion"], "segment": False, "crossfade": 0, "crossfade_next": 0},
                "pack_key": f"shotmd_{payload['motion']['series']}",
                "transition": "continue" if shot.continues else "cut"}
     payload = continue_shot(payload)
@@ -1146,6 +1204,43 @@ def save_tail(series: str, block: int, frames) -> str | None:
     return path
 
 
+def held_path(series: str, block: int) -> str:
+    return os.path.join(series_directory(series), f"held_{int(block):03d}.npz")
+
+
+def save_held(series: str, block: int, frames, audio=None) -> str | None:
+    """Keep the frames (and sound) a block held back for the next block's cross-fade."""
+    import numpy as np
+    import torch
+
+    if frames is None or not hasattr(frames, "shape") or int(frames.shape[0]) == 0:
+        return None
+    path = held_path(series, block)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    data = {"frames": (frames.float().clamp(0, 1) * 255).round().to(torch.uint8).cpu().numpy()}
+    if isinstance(audio, dict) and audio.get("waveform") is not None:
+        data["waveform"] = audio["waveform"].float().cpu().numpy()
+        data["sample_rate"] = np.array(int(audio["sample_rate"]))
+    np.savez_compressed(path, **data)
+    return path
+
+
+def load_held(series: str, block: int):
+    """(IMAGE frames, audio dict or None) a block held back, or None when it is not on disk."""
+    import numpy as np
+    import torch
+
+    try:
+        with np.load(held_path(series, block)) as data:
+            frames = torch.from_numpy(data["frames"]).float().div_(255.0)
+            audio = None
+            if "waveform" in data:
+                audio = {"waveform": torch.from_numpy(data["waveform"].copy()), "sample_rate": int(data["sample_rate"])}
+    except (OSError, KeyError, ValueError):
+        return None
+    return frames, audio
+
+
 def load_tail(series: str, block: int):
     """Load a saved block tail as IMAGE frames, or None when it is not on disk."""
     import numpy as np
@@ -1171,8 +1266,11 @@ def _next_block(block: int, total: int, is_last: bool, picks: list[int] | None =
 
 
 def shot_payload(shot: Shot, total: int, markdown_fingerprint: str, series: str,
-                 is_last: bool | None = None, picks: list[int] | None = None) -> dict[str, Any]:
-    """The production-shot dict Setup already understands, plus the motion window."""
+                 is_last: bool | None = None, picks: list[int] | None = None,
+                 next_crossfade: int = 0) -> dict[str, Any]:
+    """The production-shot dict Setup already understands, plus the motion window.
+
+    ``next_crossfade``: the block run after this one opens with a cross-fade of that many frames."""
     if is_last is None:
         is_last = shot.index >= total
     return {
@@ -1216,6 +1314,10 @@ def shot_payload(shot: Shot, total: int, markdown_fingerprint: str, series: str,
             "video": bool(shot.video),
             # @first: picture card number of the block's first frame (0 = none).
             "first_picture": int(shot.first_picture),
+            # @transition crossfade: frames this block cross-fades in from the previous block (0 = cut).
+            "crossfade": int(shot.crossfade),
+            # Frames the next block cross-fades over: this block holds them back (0 = none).
+            "crossfade_next": int(next_crossfade),
             # @audio 分块: Setup cuts every audio card to this block's range.
             "audio_window": bool(shot.audio_window),
             # @face_blur: this block's source-face blur for H3 动作迁移预处理 ("" = the node's setting).
@@ -1265,8 +1367,8 @@ class FeiHouEasyH3ShotPrompts:
                     "顺序生成：按顺序跑全片，看下面的镜号。手动设置：只跑镜号里列出的块（例如 6,9 或 3-5），镜号保持不变。"}),
                 "shot_numbers": ("STRING", {"default": "1", "tooltip":
                     "顺序生成时：镜号跟着进度走（1/4、2/4…）。不动它，中断后再运行就接着跑，最后照样拼成全片；"
-                    "改成 1 = 全片重跑；改成别的块号 = 从那一块重新开始（不接上一块的结尾），跑完和前面已跑好的块一起拼成全片；"
-                    "0 = 自动：每次运行都从第 1 块开始，显示 1/4（自动）、2/4（自动）…。整片跑完镜号回到 1（自动模式保持 0）。"
+                    "改成 0 或 1 = 全片重跑；改成别的块号 = 从那一块开始往下跑（不接上一块的结尾），跑完和前面已跑好的块一起拼成全片。"
+                    "整片跑完镜号回到 1。"
                     "手动设置时填要跑的块，例如 6,9 或 3-5，0 = 全片。左右箭头 ±1、按住左右拖动可调，单击可输入。"}),
 
             },
@@ -1296,6 +1398,7 @@ class FeiHouEasyH3ShotPrompts:
         start = start_mode(start)
         picks = parse_picks(shot_numbers, total) if start == START_MANUAL else []
         fresh = False  # start this block without the previous block's tail
+        restart = False  # the block starts from its first segment (not a resumed run)
         resumable = state is not None and not state.get("done")
 
         if start == START_MANUAL:
@@ -1307,28 +1410,32 @@ class FeiHouEasyH3ShotPrompts:
                       or new_series(markdown_fingerprint))
         else:
             text = str(shot_numbers or "").strip()
+            # "N!": the user changed 镜号 (the browser marks it), so start at N afresh
+            # even when an interrupted run stopped in block N.
+            changed = text.endswith("!")
+            text = text.rstrip("!").strip()
             continued = AUTO_CONTINUE.match(text)
             current = max(1, min(total, int(state.get("block") or 1))) if resumable else 0
             if continued:
                 wanted = int(continued.group(1))         # 自动: the film's next run
             elif not text or re.fullmatch(r"0+", text):
-                wanted = 0                                # 自动: every run starts the film over
+                wanted = 0                                # 0 = 全片重跑
             else:
                 wanted = parse_picks(text, total)[0]
             if continued and resumable and wanted == current:
                 block, series = current, str(state.get("series") or "")
-                LOGGER.info("Easy H3 shot prompts: 顺序生成（自动），接着跑分镜 %d/%d（series %s）", block, total, series)
-            elif wanted and resumable and wanted == current:
+                LOGGER.info("Easy H3 shot prompts: 顺序生成，接着跑分镜 %d/%d（series %s）", block, total, series)
+            elif wanted and resumable and wanted == current and not changed:
                 # 镜号 untouched: the interrupted block continues, the film still joins at the end.
                 block, series = current, str(state.get("series") or "")
                 LOGGER.info("Easy H3 shot prompts: 顺序生成，从分镜 %d/%d 继续（series %s）", block, total, series)
             elif wanted <= 1:
-                block, series = 1, new_series(markdown_fingerprint)
-                LOGGER.info("Easy H3 shot prompts: 顺序生成%s，从第 1 块开始跑全片", "（自动）" if not wanted else "")
+                block, series, restart = 1, new_series(markdown_fingerprint), True
+                LOGGER.info("Easy H3 shot prompts: 顺序生成，镜号 %d，全片重跑：从第 1 块开始", wanted)
             else:
                 # Another block: start there afresh; the film keeps its series, so the
                 # blocks already made still join with these into the whole film.
-                block, fresh = wanted, True
+                block, fresh, restart = wanted, True, True
                 series = (str(state.get("series") or "") if state else "") or new_series(markdown_fingerprint)
                 LOGGER.info("Easy H3 shot prompts: 顺序生成，从分镜 %d/%d 重新开始（不接上一块的结尾，series %s）",
                             block, total, series)
@@ -1341,7 +1448,13 @@ class FeiHouEasyH3ShotPrompts:
             shot = replace(shot, continues=False)
         # The film ends at its last block, a filtered run at its last pick.
         is_last = (block >= max(picks)) if picks else (block >= total)
-        payload = shot_payload(shot, total, markdown_fingerprint, series, is_last, picks)
+        following = _next_block(block, total, is_last, picks)
+        next_crossfade = shots[block].crossfade if following == block + 1 and block < total else 0
+        payload = shot_payload(shot, total, markdown_fingerprint, series, is_last, picks, next_crossfade)
+        if restart:
+            # Motion Segment drops a half-finished run of this block (same film and block
+            # when the user set 镜号 to the block an interrupted run stopped in).
+            payload["motion"]["restart"] = True
         # Without 动作迁移分段 (1st/2nd Sample Enhancer graphs such as v8) Setup
         # encodes the block itself and the browser advances 镜号 after the run.
         standalone = not _motion_segment_in(prompt)
