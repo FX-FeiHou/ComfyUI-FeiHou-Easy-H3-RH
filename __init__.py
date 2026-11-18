@@ -33,6 +33,7 @@ from .split_nodes import FeiHouEasyH3RHContinuousOutput, FeiHouEasyH3RHMedia, Fe
 from .production_continuation import FeiHouEasyH3ContinueOut
 from .shot_prompts import FeiHouEasyH3ShotPrompts
 from .motion_transfer import FeiHouEasyH3MotionCollect, FeiHouEasyH3MotionPreprocess, FeiHouEasyH3MotionSegment
+from .film_join import FeiHouEasyH3FilmJoin
 
 NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHFaceRefine": FeiHouEasyH3FaceRefine,
@@ -57,6 +58,7 @@ NODE_CLASS_MAPPINGS = {
     "FeiHouEasyH3RHMotionPreprocess": FeiHouEasyH3MotionPreprocess,
     "FeiHouEasyH3RHMotionSegment": FeiHouEasyH3MotionSegment,
     "FeiHouEasyH3RHMotionCollect": FeiHouEasyH3MotionCollect,
+    "FeiHouEasyH3RHFilmJoin": FeiHouEasyH3FilmJoin,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -81,6 +83,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "FeiHouEasyH3RHMotionPreprocess": "H3动作迁移预处理 · RH",
     "FeiHouEasyH3RHMotionSegment": "FeiHou Easy H3 Motion Segment（动作迁移分段）· RH",
     "FeiHouEasyH3RHMotionCollect": "FeiHou Easy H3 Motion Collect（动作迁移收束）· RH",
+    "FeiHouEasyH3RHFilmJoin": "FeiHou Easy H3 完整视频拼接 · RH",
 }
 
 WEB_DIRECTORY = "./web"

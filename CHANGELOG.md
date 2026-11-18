@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.4.22
+
+- New node **FeiHou Easy H3 完整视频拼接 · RH** (`FeiHouEasyH3RHFilmJoin`): joins a shot-md film into one `<name>_完整.mp4` on RunningHub. Connect Motion Collect · RH's images / audio / series_latent / fps; every block video is still saved by the video node on Collect's images. On RunningHub each queued block is its own task, usually on another machine, so earlier block videos are not on that machine's disk: the browser records each saved block video (its RunningHub file URL, or the local file) in the node's `block_videos`, and the film's last block downloads them, adds its own frames, brings every piece to the same size, frame rate and 48 kHz stereo AAC (silence for a block without sound) and joins them. Blocks without a record are listed in the log and left out. The record starts over for another md or when the film runs again from block 1.
+- Motion workflow (browser): with a join node in the graph, the next block is queued once the finished block's video is saved (at most 3 minutes later), so the join node's record already holds it. Segments inside a block are queued at once, as before.
+
 ## v1.4.21
 
 - Ported from the standard edition (v1.4.33):

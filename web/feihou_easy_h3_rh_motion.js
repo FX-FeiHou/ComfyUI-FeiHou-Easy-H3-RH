@@ -921,6 +921,69 @@ function queueNextRun(shot, block) {
   setTimeout(() => void app.queuePrompt(0, 1), 0);
 }
 
+// 完整视频拼接 · RH: every block video saved by the video node fed by Motion
+// Collect is recorded in the join node (on RunningHub its file URL), so the
+// film's last block can join them even though each block ran on another machine.
+const JOIN_NODE = "FeiHouEasyH3RHFilmJoin";
+const BLOCK_VIDEO_NODES = new Set(["VHS_VideoCombine", "VideoCombineV2"]);
+const JOIN_WAIT_MS = 180000;
+const runBlocks = new Map();  // prompt_id -> { block, fingerprint } from 分镜提示词
+let pendingNext = null;       // the next run, held until this block's video is saved
+
+function graphNodes() {
+  return app.graph?._nodes || app.graph?.nodes || [];
+}
+
+function joinNodes() {
+  return graphNodes().filter((node) => node?.type === JOIN_NODE && node.mode !== 2 && node.mode !== 4);
+}
+
+function linkById(id) {
+  return app.graph?.links?.[id] ?? app.graph?.links?.get?.(id);
+}
+
+function fedByCollect(node) {
+  const input = node?.inputs?.find((item) => item?.name === "images");
+  const link = input?.link == null ? null : linkById(input.link);
+  const source = link ? app.graph.getNodeById(link.origin_id) : null;
+  return source?.type === "FeiHouEasyH3RHMotionCollect";
+}
+
+function recordBlockVideo(promptId, item) {
+  const run = runBlocks.get(String(promptId));
+  if (!run || !item?.filename) return;
+  const entry = { url: item.cos_url || item.url || "", filename: item.filename,
+                  subfolder: item.subfolder || "", type: item.type || "output" };
+  for (const node of joinNodes()) {
+    const widget = node.widgets?.find((field) => field?.name === "block_videos");
+    if (!widget) continue;
+    let data = {};
+    try { data = JSON.parse(String(widget.value || "") || "{}"); } catch { data = {}; }
+    // Another md, or the film run again from block 1: the old record is not this film.
+    if (data.fingerprint !== run.fingerprint || Number(run.block) === 1) data = { fingerprint: run.fingerprint, videos: {} };
+    data.videos ||= {};
+    data.videos[String(run.block)] = entry;
+    widget.value = JSON.stringify(data);
+    if (widget._state) widget._state.value = widget.value;
+    node.setDirtyCanvas?.(true, true);
+  }
+  app.graph?.change?.();
+  console.info(`[Easy H3 RH] 完整视频拼接：记录分镜 ${run.block} 的视频 ${entry.filename}`);
+}
+
+function flushPendingNext(promptId) {
+  if (!pendingNext || (promptId != null && String(pendingNext.promptId) !== String(promptId))) return;
+  const { shot, block, timer } = pendingNext;
+  clearTimeout(timer);
+  pendingNext = null;
+  queueNextRun(shot, block);
+}
+
+function holdNextRun(promptId, shot, block) {
+  if (pendingNext) flushPendingNext(pendingNext.promptId);
+  pendingNext = { promptId, shot, block, timer: setTimeout(() => flushPendingNext(promptId), JOIN_WAIT_MS) };
+}
+
 function showStandaloneProgress(info) {
   if (!info) return;
   const owner = info.node == null ? null : app.graph?.getNodeById?.(info.node);
@@ -944,6 +1007,7 @@ app.registerExtension({
       "FeiHouEasyH3RHMotionSegment",
       "FeiHouEasyH3RHMotionCollect",
       "FeiHouEasyH3RHSetup",
+      "FeiHouEasyH3RHFilmJoin",
     ],
   },
   // RH change --end--
@@ -956,7 +1020,17 @@ app.registerExtension({
       const ownerId = event?.detail?.display_node ?? event?.detail?.node;
       const owner = app.graph?.getNodeById?.(ownerId);
       const ownedBy = (type) => owner?.type === type;
-      if (output.feihou_rh_shot?.[0] && ownedBy(SHOT_NODE)) showShot(output.feihou_rh_shot[0]);
+      const promptId = event?.detail?.prompt_id;
+      if (output.feihou_rh_shot?.[0] && ownedBy(SHOT_NODE)) {
+        showShot(output.feihou_rh_shot[0]);
+        if (promptId != null) runBlocks.set(String(promptId), { block: output.feihou_rh_shot[0].index,
+                                                                fingerprint: output.feihou_rh_shot[0].fingerprint });
+      }
+      if (BLOCK_VIDEO_NODES.has(owner?.type) && fedByCollect(owner) && output.gifs?.[0]) {
+        recordBlockVideo(promptId, output.gifs[0]);
+        flushPendingNext(promptId);
+        return;
+      }
       const info = output.feihou_rh_motion?.[0];
       const mine = ownedBy("FeiHouEasyH3RHMotionCollect");
       if (mine) setShotProgress(info);
@@ -967,8 +1041,17 @@ app.registerExtension({
       const shot = activeShotNode();
       const where = info.blocks ? `第 ${info.block}/${info.blocks} 个分镜，第 ${info.done}/${info.count} 段` : `第 ${info.done}/${info.count} 段`;
       console.info(`[Easy H3] 动作迁移：${where}完成，排队下一段`);
-      queueNextRun(shot, "shot_done" in info ? info.shot_next : info.block);
+      const next = "shot_done" in info ? info.shot_next : info.block;
+      // A finished block: its video node saves it right after this; the join node needs
+      // that video in the next run's record, so queue once it is saved.
+      const videoNode = joinNodes().length && "shot_done" in info
+        && graphNodes().some((node) => BLOCK_VIDEO_NODES.has(node?.type) && node.mode === 0 && fedByCollect(node));
+      if (videoNode && promptId != null) holdNextRun(promptId, shot, next);
+      else queueNextRun(shot, next);
     });
+    for (const name of ["execution_success", "execution_error", "execution_interrupted"]) {
+      api.addEventListener(name, (event) => flushPendingNext(event?.detail?.prompt_id));
+    }
   },
   beforeRegisterNodeDef(nodeType, nodeData) {
     if (nodeData?.name === SEGMENT_NODE) {
