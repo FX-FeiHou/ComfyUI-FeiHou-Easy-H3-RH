@@ -136,6 +136,31 @@ def _write_block(frames, audio, fps: float, path: str) -> None:
     video.save_to(path, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264)
 
 
+_DATE_TOKEN = re.compile(r"%date:([^%]+)%")
+
+
+def expand_prefix(text: str, now=None) -> str:
+    """%date:yyyy-MM-dd% and the like, as ComfyUI's browser replaces them for its save nodes.
+
+    The browser does not replace them for this node (seen on RunningHub), so the
+    file was named after the raw text; a prefix already replaced is left as it is.
+    """
+    import time
+
+    stamp = time.localtime() if now is None else now
+
+    def replace(match):
+        out = match.group(1)
+        for token, value in (("yyyy", f"{stamp.tm_year:04d}"), ("yy", f"{stamp.tm_year % 100:02d}"),
+                             ("MM", f"{stamp.tm_mon:02d}"), ("dd", f"{stamp.tm_mday:02d}"),
+                             ("hh", f"{stamp.tm_hour:02d}"), ("mm", f"{stamp.tm_min:02d}"),
+                             ("ss", f"{stamp.tm_sec:02d}")):
+            out = out.replace(token, value)
+        return out
+
+    return _DATE_TOKEN.sub(replace, str(text or ""))
+
+
 def _even(value: int) -> int:
     return max(2, int(value) // 2 * 2)
 
@@ -216,7 +241,7 @@ class FeiHouEasyH3FilmJoin:
                 LOGGER.warning("Easy H3 完整视频拼接：缺分镜 %s 的视频（没有记录或下载失败），用现有的 %d 块拼",
                                "、".join(str(block) for block in missing), len(pieces))
             out_folder, filename, counter, subfolder, _ = folder_paths.get_save_image_path(
-                str(filename_prefix or "FeiHou_H3"), folder_paths.get_output_directory(), width, height)
+                expand_prefix(filename_prefix) or "FeiHou_H3", folder_paths.get_output_directory(), width, height)
             name = f"{filename}_{counter:05}_完整.mp4"
             target = os.path.join(out_folder, name)
             _concat(ffmpeg, pieces, target, folder)

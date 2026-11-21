@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.5
+
+- 制作包分镜加载器 · RH: shots now run like 分镜提示词 · RH (ported from the standard edition). The native 生成后操作 (increment / decrement / randomize / fixed, shown as 生成顺序控制) is replaced by 生成方式: 顺序生成 (default) / 手动设置, and 分镜序号 becomes a text field.
+  - 分镜序号 is drawn like 分镜提示词's 镜号: the shot number and the pack total (2/5, 3/5 …; the total comes from 制作包状态检测 or the last run), arrows step by one, dragging the middle changes it, a click opens a box for a number or a list (6,9 / 3-5).
+  - 顺序生成: one 运行 makes every shot from 分镜序号 to the last one. When a shot finishes, the server reports it (`feihou_rh_shot_progress`) and the browser sets 分镜序号 to the next shot and queues it, as 分镜提示词 · RH does; keep the ComfyUI page open. An interrupted or failed shot queues nothing and keeps its number. 0 or 1 starts from the first shot; when the pack is done 分镜序号 goes back to 1.
+  - 手动设置: only the listed shots run, e.g. `6,9` or `3-5` (`0` = all), one after the other; the list stays as typed.
+  - Keep ComfyUI's 运行次数 at 1. Saved workflows open as 顺序生成 at their saved index (fixed opens as 手动设置). Progress belongs to the prepared Shotlist page. 预览当前分镜 shows the first listed shot.
+  - 生成方式 is an optional input, so API prompts saved before it (an integer `shot_index`, no 生成方式) validate and run one shot as before; with `use_pack` off nothing is queued. production_plan is unchanged.
+- 完整视频拼接 · RH: `%date:yyyy-MM-dd%` and the other date tokens in filename_prefix are now replaced by the node (the browser does not replace them for it, so the joined video was named after the raw text on RunningHub).
+
 ## v1.4.22
 
 - New node **FeiHou Easy H3 完整视频拼接 · RH** (`FeiHouEasyH3RHFilmJoin`): joins a shot-md film into one `<name>_完整.mp4` on RunningHub. Connect Motion Collect · RH's images / audio / series_latent / fps; every block video is still saved by the video node on Collect's images. On RunningHub each queued block is its own task, usually on another machine, so earlier block videos are not on that machine's disk: the browser records each saved block video (its RunningHub file URL, or the local file) in the node's `block_videos`, and the film's last block downloads them, adds its own frames, brings every piece to the same size, frame rate and 48 kHz stereo AAC (silence for a block without sound) and joins them. Blocks without a record are listed in the log and left out. The record starts over for another md or when the film runs again from block 1.
